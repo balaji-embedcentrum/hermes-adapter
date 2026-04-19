@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-adapter"
+version = "0.1.0"
+description = "Sidecar adapter for hermes-agent — exposes A2A (Agent-to-Agent) server + workspace HTTP API (filesystem, git, Sylang symbols). Designed for Hermes Studio, Akela, and any project that needs hermes-agent compatibility without patching the core."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Balaji Boominathan", email = "balaji@sylang.dev" }]
+keywords = ["hermes", "agent", "a2a", "agent-to-agent", "sidecar", "workspace", "sylang", "mbse"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+  "aiohttp>=3.9.0,<4",
+  "httpx>=0.28.1,<1",
+  "pyyaml>=6.0,<7",
+  "python-dotenv>=1.0,<2",
+]
+
+[project.optional-dependencies]
+a2a = [
+  "a2a-sdk[http-server]>=0.2.0,<1",
+  "uvicorn[standard]>=0.24.0,<1",
+]
+dev = [
+  "pytest>=8.0,<10",
+  "pytest-asyncio>=0.23,<2",
+  "pytest-aiohttp>=1.0,<2",
+  "ruff>=0.5",
+]
+all = [
+  "hermes-adapter[a2a]",
+  "hermes-adapter[dev]",
+]
+
+[project.urls]
+Homepage = "https://github.com/balaji-embedcentrum/hermes-adapter"
+Repository = "https://github.com/balaji-embedcentrum/hermes-adapter"
+Issues = "https://github.com/balaji-embedcentrum/hermes-adapter/issues"
+
+[project.scripts]
+hermes-adapter = "hermes_adapter.cli:main"
+hermes-adapter-workspace = "hermes_adapter.workspace.app:main"
+hermes-adapter-a2a = "hermes_adapter.a2a.entry:main"
+
+[tool.setuptools.packages.find]
+include = ["hermes_adapter", "hermes_adapter.*"]
+
+[tool.setuptools.package-data]
+hermes_adapter = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
