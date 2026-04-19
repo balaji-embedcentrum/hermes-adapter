@@ -27,6 +27,7 @@ dependencies = [
   "httpx>=0.28.1,<1",
   "pyyaml>=6.0,<7",
   "python-dotenv>=1.0,<2",
+  "starlette>=0.35,<2",
 ]
 
 [project.optional-dependencies]
@@ -52,6 +53,7 @@ Issues = "https://github.com/balaji-embedcentrum/hermes-adapter/issues"
 
 [project.scripts]
 hermes-adapter = "hermes_adapter.cli:main"
+hermes-adapter-gateway = "hermes_adapter.gateway.entry:main"
 hermes-adapter-workspace = "hermes_adapter.workspace.app:main"
 hermes-adapter-a2a = "hermes_adapter.a2a.entry:main"
 

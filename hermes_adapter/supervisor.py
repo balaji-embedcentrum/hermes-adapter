@@ -136,20 +136,24 @@ class Supervisor:
         if self.manifest.a2a_key:
             env["A2A_KEY"] = self.manifest.a2a_key
 
-        # Prefer the adapter's own self-contained A2A server (ships with
-        # this package, works against upstream hermes-agent). Fall back to
-        # hermes-agent's own hermes-a2a script if someone has that installed
-        # from a fork that provides it.
-        hermes_a2a = shutil.which("hermes-adapter-a2a") or shutil.which("hermes-a2a")
-        if not hermes_a2a:
+        # Unified gateway: one port per agent, serves OpenAI /v1/*, A2A
+        # /.well-known/agent.json + JSON-RPC, workspace /ws/*, /health.
+        # Fallback chain for older installs:
+        gateway_bin = (
+            shutil.which("hermes-adapter-gateway")
+            or shutil.which("hermes-adapter-a2a")
+            or shutil.which("hermes-a2a")
+        )
+        if not gateway_bin:
             logger.error(
-                "Cannot find 'hermes-adapter-a2a' on PATH. Reinstall the adapter with:\n"
+                "Cannot find 'hermes-adapter-gateway' on PATH. Reinstall the adapter with:\n"
                 "    pip install --upgrade --force-reinstall "
                 "'hermes-adapter[a2a] @ git+https://github.com/balaji-embedcentrum/hermes-adapter.git@main'"
             )
             raise FileNotFoundError(
-                "hermes-adapter-a2a not on PATH — is hermes-adapter[a2a] installed in this venv?"
+                "hermes-adapter-gateway not on PATH — is hermes-adapter[a2a] installed in this venv?"
             )
+        hermes_a2a = gateway_bin
         log_path = DEFAULT_LOG_DIR / f"{spec.name}.log"
         log_fh = open(log_path, "ab", buffering=0)
 
