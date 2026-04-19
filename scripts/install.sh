@@ -37,7 +37,10 @@ die()  { printf "%s✗ %s%s\n" "$C_RED" "$1" "$C_RESET" >&2; exit 1; }
 # --- Config -----------------------------------------------------------------
 
 HERMES_VENV="${HERMES_VENV:-$HOME/.hermes-venv}"
-HERMES_AGENT_REF="${HERMES_AGENT_REF:-main}"
+# NOTE: upstream NousResearch/hermes-agent does not yet include the a2a_adapter
+# package. Default to the fork/branch that does; override with env if needed.
+HERMES_AGENT_REPO="${HERMES_AGENT_REPO:-balaji-embedcentrum/hermes-agent}"
+HERMES_AGENT_REF="${HERMES_AGENT_REF:-feat/a2a-client-server-implementation}"
 HERMES_ADAPTER_REF="${HERMES_ADAPTER_REF:-main}"
 HERMES_WORKSPACE_DIR="${HERMES_WORKSPACE_DIR:-$HOME/hermes-workspaces}"
 HERMES_STUDIO_URL="${HERMES_STUDIO_URL:-https://hermes-studio.com}"
@@ -75,10 +78,11 @@ pip install --upgrade pip >/dev/null
 
 # --- 3. Install hermes-agent + hermes-adapter -------------------------------
 
-# hermes-agent from source (upstream is not on PyPI as of writing).
-# Use PEP 508 direct-URL syntax so extras are attached correctly on modern pip.
-say "installing hermes-agent@${HERMES_AGENT_REF}"
-pip install "hermes-agent[a2a] @ git+https://github.com/NousResearch/hermes-agent.git@${HERMES_AGENT_REF}"
+# hermes-agent from source. PEP 508 direct-URL form attaches extras correctly
+# on modern pip. Default repo/ref points at the fork that carries a2a_adapter —
+# upstream NousResearch/main doesn't ship the a2a console script yet.
+say "installing ${HERMES_AGENT_REPO}@${HERMES_AGENT_REF}"
+pip install "hermes-agent[a2a] @ git+https://github.com/${HERMES_AGENT_REPO}.git@${HERMES_AGENT_REF}"
 
 # hermes-adapter: prefer a local editable install if this script lives in a clone
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"

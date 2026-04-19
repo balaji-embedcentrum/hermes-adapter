@@ -42,6 +42,9 @@ HERMES_MODE="${HERMES_MODE:-}"
 HERMES_STUDIO_URL="${HERMES_STUDIO_URL:-https://hermes-studio.com}"
 HERMES_ADAPTER_REF="${HERMES_ADAPTER_REF:-main}"
 HERMES_ADAPTER_IMAGE="${HERMES_ADAPTER_IMAGE:-ghcr.io/balaji-embedcentrum/hermes-adapter:latest}"
+# Upstream NousResearch/hermes-agent main doesn't ship a2a_adapter; use the fork.
+HERMES_AGENT_REPO="${HERMES_AGENT_REPO:-balaji-embedcentrum/hermes-agent}"
+HERMES_AGENT_REF="${HERMES_AGENT_REF:-feat/a2a-client-server-implementation}"
 
 # ---------------------------------------------------------------------------
 # Detection
