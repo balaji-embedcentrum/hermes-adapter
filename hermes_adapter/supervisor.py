@@ -137,7 +137,17 @@ class Supervisor:
             env["A2A_KEY"] = self.manifest.a2a_key
 
         # hermes-a2a console script lives in the same venv as hermes-adapter
-        hermes_a2a = shutil.which("hermes-a2a") or "hermes-a2a"
+        hermes_a2a = shutil.which("hermes-a2a")
+        if not hermes_a2a:
+            logger.error(
+                "Cannot find 'hermes-a2a' on PATH. hermes-agent isn't installed, "
+                "or its console scripts weren't generated. Reinstall with:\n"
+                "    pip install --upgrade --force-reinstall --no-deps "
+                "'hermes-agent[a2a] @ git+https://github.com/NousResearch/hermes-agent.git@main'"
+            )
+            raise FileNotFoundError(
+                "hermes-a2a not on PATH — is hermes-agent installed in this venv?"
+            )
         log_path = DEFAULT_LOG_DIR / f"{spec.name}.log"
         log_fh = open(log_path, "ab", buffering=0)
 
