@@ -80,6 +80,11 @@ A2A_KEY=replace-with-long-random-string
 # Public URL your Studio / Akela UI will call. Points at Traefik.
 PUBLIC_API_HOST=api.your-domain.com
 
+# Origins that user browsers load Studio from (for CORS).
+# Add every Studio / Akela UI hostname whose JS should be allowed to
+# call this adapter from a user's browser.
+HERMES_ADAPTER_CORS_ORIGINS=https://studio.example.com,https://app.akela.ai
+
 # Host path where every agent's repos live (shared volume)
 HERMES_WORKSPACE_DIR=/srv/hermes/workspaces
 
