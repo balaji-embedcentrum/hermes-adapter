@@ -136,17 +136,19 @@ class Supervisor:
         if self.manifest.a2a_key:
             env["A2A_KEY"] = self.manifest.a2a_key
 
-        # hermes-a2a console script lives in the same venv as hermes-adapter
-        hermes_a2a = shutil.which("hermes-a2a")
+        # Prefer the adapter's own self-contained A2A server (ships with
+        # this package, works against upstream hermes-agent). Fall back to
+        # hermes-agent's own hermes-a2a script if someone has that installed
+        # from a fork that provides it.
+        hermes_a2a = shutil.which("hermes-adapter-a2a") or shutil.which("hermes-a2a")
         if not hermes_a2a:
             logger.error(
-                "Cannot find 'hermes-a2a' on PATH. hermes-agent isn't installed, "
-                "or its console scripts weren't generated. Reinstall with:\n"
-                "    pip install --upgrade --force-reinstall --no-deps "
-                "'hermes-agent[a2a] @ git+https://github.com/NousResearch/hermes-agent.git@main'"
+                "Cannot find 'hermes-adapter-a2a' on PATH. Reinstall the adapter with:\n"
+                "    pip install --upgrade --force-reinstall "
+                "'hermes-adapter[a2a] @ git+https://github.com/balaji-embedcentrum/hermes-adapter.git@main'"
             )
             raise FileNotFoundError(
-                "hermes-a2a not on PATH — is hermes-agent installed in this venv?"
+                "hermes-adapter-a2a not on PATH — is hermes-adapter[a2a] installed in this venv?"
             )
         log_path = DEFAULT_LOG_DIR / f"{spec.name}.log"
         log_fh = open(log_path, "ab", buffering=0)

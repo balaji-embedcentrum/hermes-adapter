@@ -37,10 +37,11 @@ die()  { printf "%s✗ %s%s\n" "$C_RED" "$1" "$C_RESET" >&2; exit 1; }
 # --- Config -----------------------------------------------------------------
 
 HERMES_VENV="${HERMES_VENV:-$HOME/.hermes-venv}"
-# NOTE: upstream NousResearch/hermes-agent does not yet include the a2a_adapter
-# package. Default to the fork/branch that does; override with env if needed.
-HERMES_AGENT_REPO="${HERMES_AGENT_REPO:-balaji-embedcentrum/hermes-agent}"
-HERMES_AGENT_REF="${HERMES_AGENT_REF:-feat/a2a-client-server-implementation}"
+# Official upstream hermes-agent is all we need — the adapter ships its own
+# self-contained A2A server (hermes-adapter-a2a). Overrideable via env for
+# users who want a specific fork.
+HERMES_AGENT_REPO="${HERMES_AGENT_REPO:-NousResearch/hermes-agent}"
+HERMES_AGENT_REF="${HERMES_AGENT_REF:-main}"
 HERMES_ADAPTER_REF="${HERMES_ADAPTER_REF:-main}"
 HERMES_WORKSPACE_DIR="${HERMES_WORKSPACE_DIR:-$HOME/hermes-workspaces}"
 HERMES_STUDIO_URL="${HERMES_STUDIO_URL:-https://hermes-studio.com}"
@@ -78,11 +79,12 @@ pip install --upgrade pip >/dev/null
 
 # --- 3. Install hermes-agent + hermes-adapter -------------------------------
 
-# hermes-agent from source. PEP 508 direct-URL form attaches extras correctly
-# on modern pip. Default repo/ref points at the fork that carries a2a_adapter —
-# upstream NousResearch/main doesn't ship the a2a console script yet.
+# hermes-agent from source. We don't need hermes-agent's own [a2a] extra —
+# the adapter ships its own A2A server that only needs run_agent + hermes_cli,
+# both of which are in upstream main. Installing without extras keeps the
+# dep footprint smaller.
 say "installing ${HERMES_AGENT_REPO}@${HERMES_AGENT_REF}"
-pip install "hermes-agent[a2a] @ git+https://github.com/${HERMES_AGENT_REPO}.git@${HERMES_AGENT_REF}"
+pip install "hermes-agent @ git+https://github.com/${HERMES_AGENT_REPO}.git@${HERMES_AGENT_REF}"
 
 # hermes-adapter: prefer a local editable install if this script lives in a clone
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
