@@ -95,10 +95,15 @@ docker compose up
 
 Brings up `hermes-agent` on `:8765` and `hermes-adapter` on `:8766` (workspace) + `:9000` (A2A).
 
+## Deployment guides
+
+- [docs/deploy-local.md](docs/deploy-local.md) — laptop: one adapter + N local agents + Hermes Studio
+- [docs/deploy-vps.md](docs/deploy-vps.md) — VPS: one shared adapter + 30+ hermes-agent containers + Traefik TLS
+
 ## Integration
 
-- [docs/integration-studio.md](docs/integration-studio.md) — Hermes Studio
-- [docs/integration-akela.md](docs/integration-akela.md) — Akela
+- [docs/integration-studio.md](docs/integration-studio.md) — Hermes Studio wiring
+- [docs/integration-akela.md](docs/integration-akela.md) — Akela orchestrator
 
 ## Development
 
