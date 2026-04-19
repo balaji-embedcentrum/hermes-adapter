@@ -61,24 +61,41 @@ cd /srv/hermes
 
 ## Step 2 — Write `/srv/hermes/.env`
 
+hermes-agent is provider-agnostic — set only the key for the LLM provider you're actually using.
+
 ```bash
 cat > /srv/hermes/.env <<'EOF'
-# --- Secrets ---
-ANTHROPIC_API_KEY=sk-ant-replace-me
-# optional: OPENAI_API_KEY, GEMINI_API_KEY, etc.
+# --- Model provider (pick one; uncomment what you use) ---
+# ANTHROPIC_API_KEY=sk-ant-...
+# OPENAI_API_KEY=sk-...
+# GEMINI_API_KEY=...
+# OPENROUTER_API_KEY=sk-or-...
+# Self-hosted OpenAI-compatible endpoint (Ollama, vLLM, LM Studio, ...)
+# OPENAI_API_KEY=dummy
+# OPENAI_BASE_URL=http://ollama:11434/v1
 
-# Bearer token the adapter (and every A2A endpoint) requires
+# --- Bearer token the adapter + every A2A endpoint require ---
 A2A_KEY=replace-with-long-random-string
 
-# Public URL your Studio / Akela UI will call. Points at Traefik.
+# --- Public URL your Studio / Akela UI will call (points at Traefik) ---
 PUBLIC_API_HOST=api.your-domain.com
 
-# Host paths (do not change unless you moved the folders above)
+# --- Host paths (do not change unless you moved the folders above) ---
 HERMES_WORKSPACE_DIR=/srv/hermes/workspaces
 HERMES_HOME=/srv/hermes/hermes-home
 EOF
 chmod 600 /srv/hermes/.env
 ```
+
+You also need to tell hermes which model to use by default. Edit `/srv/hermes/hermes-home/config.yaml`:
+
+```yaml
+model:
+  default: anthropic/claude-sonnet-4.6   # or openai/gpt-5, google/gemini-2.0-flash,
+                                         # openrouter/meta-llama/llama-3.1-70b, etc.
+```
+
+Whatever you pick here must match the key you set above.
 
 ## Step 3 — Write `/srv/hermes/docker-compose.yml`
 

@@ -55,17 +55,45 @@ pip install -e '.[a2a]'
 
 ## Step 3 — One shared config
 
+hermes-agent is provider-agnostic. Use **whichever model provider you want**. Put its API key in `~/.hermes/.env` — set only the one(s) you actually use.
+
 ```bash
 mkdir -p ~/.hermes ~/hermes-workspaces
 
 cat > ~/.hermes/.env <<'EOF'
-ANTHROPIC_API_KEY=sk-ant-replace-me
+# --- Pick ONE (or more) model providers ---
+# Anthropic Claude
+# ANTHROPIC_API_KEY=sk-ant-...
+
+# OpenAI (GPT-4, GPT-5, o1, ...)
+# OPENAI_API_KEY=sk-...
+
+# Google Gemini
+# GEMINI_API_KEY=...
+
+# OpenRouter (routes to any of the above + Llama, Mistral, DeepSeek, Qwen, ...)
+# OPENROUTER_API_KEY=sk-or-...
+
+# Local / self-hosted via an OpenAI-compatible endpoint (Ollama, vLLM, LM Studio, ...)
+# OPENAI_API_KEY=dummy
+# OPENAI_BASE_URL=http://localhost:11434/v1
+
+# --- A2A bearer token (required; any long random string) ---
 A2A_KEY=local-dev-key-change-me
 EOF
 chmod 600 ~/.hermes/.env
 ```
 
-Every agent and the adapter read from `~/.hermes/.env` automatically.
+Then tell hermes which model to use by default — `~/.hermes/config.yaml`:
+
+```yaml
+# Pick the one that matches the key you set above.
+model:
+  default: anthropic/claude-sonnet-4.6    # or openai/gpt-5, google/gemini-2.0-flash,
+                                          # openrouter/meta-llama/llama-3.1-70b, etc.
+```
+
+Every agent and the adapter read from `~/.hermes/.env` and `~/.hermes/config.yaml` automatically.
 
 ## Step 4 — Smoke test hermes itself
 
@@ -210,7 +238,8 @@ To stop everything: `pkill -f 'hermes-(a2a|adapter)'`.
 
 | Variable | Used by | What it does |
 |---|---|---|
-| `ANTHROPIC_API_KEY` (or equivalent) | every `hermes-a2a` | Lets the agent call the LLM |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` / `OPENROUTER_API_KEY` | every `hermes-a2a` | Lets the agent call the LLM provider you chose |
+| `OPENAI_BASE_URL` | every `hermes-a2a` (optional) | Points hermes at a local / self-hosted OpenAI-compatible endpoint |
 | `A2A_PORT` | `hermes-a2a` | Which port this agent listens on |
 | `AGENT_NAME`, `AGENT_DESCRIPTION` | `hermes-a2a` | What shows up in the Agent Card |
 | `A2A_KEY` | `hermes-a2a` (optional) | Bearer token callers must present |
