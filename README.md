@@ -97,8 +97,11 @@ Brings up `hermes-agent` on `:8765` and `hermes-adapter` on `:8766` (workspace) 
 
 ## Deployment guides
 
-- [docs/deploy-local.md](docs/deploy-local.md) — laptop: one adapter + N local agents + Hermes Studio
-- [docs/deploy-vps.md](docs/deploy-vps.md) — VPS: one shared adapter + 30+ hermes-agent containers + Traefik TLS
+Every Hermes Studio user plugs in agents from one of three places. All three use the same wire protocol — only the hostnames and TLS change. See [docs/agent-sources.md](docs/agent-sources.md) for the mental model, then pick your tier:
+
+- [docs/deploy-local.md](docs/deploy-local.md) — **tier 1:** user's laptop, hosted Studio calls `127.0.0.1:*` via CORS
+- [docs/deploy-user-vps.md](docs/deploy-user-vps.md) — **tier 2:** user's own single-tenant VPS, Caddy + systemd
+- [docs/deploy-vps.md](docs/deploy-vps.md) — **tier 3:** platform operator (hermes-studio.com) runs the multi-tenant fleet
 
 ## Integration
 
