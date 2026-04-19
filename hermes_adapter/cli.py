@@ -282,6 +282,24 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_compose_generate(args: argparse.Namespace) -> int:
+    from .compose import dump_compose
+
+    manifest = Manifest.load(args.manifest)
+    text = dump_compose(
+        manifest,
+        image=args.image,
+        hermes_agent_image=args.hermes_agent_image,
+        bind_address=args.bind,
+    )
+    if args.output and args.output != "-":
+        Path(args.output).write_text(text)
+        print(f"✓ wrote {args.output}")
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
 def cmd_version(_args: argparse.Namespace) -> int:
     print(f"hermes-adapter {__version__}")
     return 0
@@ -363,6 +381,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host")
     p.add_argument("--port", type=int)
     p.set_defaults(func=cmd_a2a)
+
+    # --- compose generate ---
+    p_compose = sub.add_parser("compose", help="Docker-compose helpers")
+    p_compose_sub = p_compose.add_subparsers(dest="compose_command", required=True)
+    p = p_compose_sub.add_parser("generate", help="Emit docker-compose.yml from agents.yaml")
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    p.add_argument("-o", "--output", default="-", help="Destination file (default: stdout)")
+    p.add_argument("--image", default="ghcr.io/balaji-embedcentrum/hermes-adapter:latest",
+                   help="Adapter image tag")
+    p.add_argument("--hermes-agent-image", default="noushermes/hermes-agent:latest",
+                   help="hermes-agent image tag")
+    p.add_argument("--bind", default="127.0.0.1",
+                   help="Host bind address (use 0.0.0.0 to expose publicly; default: 127.0.0.1)")
+    p.set_defaults(func=cmd_compose_generate)
 
     p = sub.add_parser("version", help="Print version")
     p.set_defaults(func=cmd_version)
