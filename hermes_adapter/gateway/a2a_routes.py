@@ -15,7 +15,7 @@ import os
 from typing import Any
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
 logger = logging.getLogger(__name__)
 
@@ -74,18 +74,16 @@ def make_agent_card_handler(port: int):
     return handler
 
 
-async def handle_jsonrpc(request: Request) -> JSONResponse:
+async def handle_jsonrpc(request: Request):
     """POST / — A2A JSON-RPC entry point.
 
-    We re-implement a tiny surface here rather than depending on a2a-sdk's
-    A2AStarletteApplication internal routing. Accepted methods:
-      tasks/send                 — one-shot task execution
-      message/send               — A2A v0.4 equivalent
-
-    Streaming (``tasks/sendSubscribe``) is NOT served over this JSON-RPC
-    endpoint — clients that want streaming should use SSE via the OpenAI
-    ``/v1/chat/completions`` path. Akela's local-chat uses A2A over
-    non-streaming JSON-RPC for its first probe, which is what this serves.
+    Accepted methods:
+      tasks/send         — legacy one-shot (kept for older clients)
+      message/send       — A2A v0.4.x one-shot JSON-RPC
+      message/stream     — A2A v0.4.x streaming (SSE). Each event is a
+                           JSON-RPC envelope whose ``result`` carries
+                           either an ``artifact`` delta or a ``status``
+                           transition. Akela's Hunt caller prefers this.
     """
     try:
         req = await request.json()
@@ -99,7 +97,7 @@ async def handle_jsonrpc(request: Request) -> JSONResponse:
     method = req.get("method")
     params = req.get("params") or {}
 
-    if method not in ("tasks/send", "message/send"):
+    if method not in ("tasks/send", "message/send", "message/stream"):
         return JSONResponse(
             {
                 "jsonrpc": "2.0",
@@ -109,7 +107,6 @@ async def handle_jsonrpc(request: Request) -> JSONResponse:
             status_code=200,
         )
 
-    # Extract user message from either "message" (v0.4) or params directly (older)
     message = params.get("message") or params
     user_text = _extract_text(message)
     if not user_text:
@@ -123,8 +120,13 @@ async def handle_jsonrpc(request: Request) -> JSONResponse:
         )
 
     session_id = params.get("sessionId") or params.get("contextId") or "default"
+    task_id = params.get("id") or params.get("taskId") or "task-0"
+    context_id = params.get("contextId") or session_id
 
-    # Run the agent synchronously (non-streaming JSON-RPC)
+    if method == "message/stream":
+        return _stream_task(rpc_id, task_id, context_id, session_id, user_text)
+
+    # Non-streaming path (tasks/send + message/send)
     from .openai_compat import _run_agent_async
 
     try:
@@ -140,10 +142,6 @@ async def handle_jsonrpc(request: Request) -> JSONResponse:
         )
 
     final = result.get("final_response") or result.get("error") or ""
-    task_id = params.get("id") or params.get("taskId") or "task-0"
-    context_id = params.get("contextId") or session_id
-
-    # A2A-style response with a single text artifact.
     return JSONResponse(
         {
             "jsonrpc": "2.0",
@@ -161,6 +159,140 @@ async def handle_jsonrpc(request: Request) -> JSONResponse:
             },
         }
     )
+
+
+def _stream_task(
+    rpc_id, task_id: str, context_id: str, session_id: str, user_text: str
+) -> StreamingResponse:
+    """Run the agent and emit A2A v0.4.x streaming SSE events.
+
+    Emits, in order:
+      1. ``status: working`` — task accepted
+      2. N × ``artifact`` deltas with accumulated text
+      3. Optional ``artifact`` deltas with ``data: {"type": "tool_call", "name": ...}``
+      4. ``status: completed`` — terminal
+    """
+    import asyncio
+    import json
+    import queue
+
+    from .openai_compat import _executor, _run_agent_sync
+
+    async def _event_stream():
+        # 1. working
+        yield _sse_jsonrpc(rpc_id, {
+            "taskId": task_id,
+            "contextId": context_id,
+            "status": {"state": "working"},
+        })
+
+        delta_q: queue.Queue = queue.Queue()
+
+        def _on_delta(delta: str | None) -> None:
+            if delta is not None:
+                delta_q.put(delta)
+
+        def _on_tool(name: str) -> None:
+            delta_q.put({"type": "tool_call", "name": name})
+
+        loop = asyncio.get_event_loop()
+        try:
+            agent_future = loop.run_in_executor(
+                _executor,
+                lambda: _run_agent_sync(
+                    session_id,
+                    user_text,
+                    stream_delta_callback=_on_delta,
+                ),
+            )
+        except RuntimeError as e:
+            yield _sse_jsonrpc(rpc_id, {
+                "taskId": task_id,
+                "contextId": context_id,
+                "status": {"state": "failed"},
+                "error": str(e),
+            })
+            return
+
+        accumulated = ""
+        while not agent_future.done():
+            try:
+                chunk = await loop.run_in_executor(None, lambda: delta_q.get(timeout=0.05))
+            except Exception:
+                continue
+            if isinstance(chunk, dict) and chunk.get("type") == "tool_call":
+                yield _sse_jsonrpc(rpc_id, {
+                    "taskId": task_id,
+                    "contextId": context_id,
+                    "artifact": {
+                        "artifactId": f"tool_{chunk['name']}",
+                        "parts": [{"kind": "data", "data": chunk}],
+                    },
+                })
+            elif isinstance(chunk, str):
+                accumulated += chunk
+                yield _sse_jsonrpc(rpc_id, {
+                    "taskId": task_id,
+                    "contextId": context_id,
+                    "artifact": {
+                        "artifactId": "response",
+                        "parts": [{"kind": "text", "text": accumulated}],
+                    },
+                })
+
+        try:
+            result, usage = await agent_future
+        except RuntimeError as e:
+            yield _sse_jsonrpc(rpc_id, {
+                "taskId": task_id,
+                "contextId": context_id,
+                "status": {"state": "failed"},
+                "error": str(e),
+            })
+            return
+
+        # Drain any remaining deltas
+        while True:
+            try:
+                chunk = delta_q.get_nowait()
+            except queue.Empty:
+                break
+            if isinstance(chunk, str):
+                accumulated += chunk
+
+        # If the agent never emitted streaming deltas (non-streaming provider),
+        # emit the full final_response as a single artifact.
+        final = (result or {}).get("final_response") or ""
+        if not accumulated and final:
+            yield _sse_jsonrpc(rpc_id, {
+                "taskId": task_id,
+                "contextId": context_id,
+                "artifact": {
+                    "artifactId": "response",
+                    "parts": [{"kind": "text", "text": final}],
+                },
+            })
+
+        # Terminal status
+        yield _sse_jsonrpc(rpc_id, {
+            "taskId": task_id,
+            "contextId": context_id,
+            "status": {"state": "completed"},
+            "metadata": {"usage": usage or {}},
+        })
+
+    return StreamingResponse(
+        _event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+def _sse_jsonrpc(rpc_id, result: dict) -> str:
+    import json as _json
+
+    envelope = {"jsonrpc": "2.0", "id": rpc_id, "result": result}
+    return f"data: {_json.dumps(envelope)}\n\n"
 
 
 def _extract_text(message: Any) -> str:

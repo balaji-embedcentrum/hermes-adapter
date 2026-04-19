@@ -145,6 +145,46 @@ def test_jsonrpc_rejects_message_with_no_text(client):
     assert body["error"]["code"] == -32602
 
 
+def test_jsonrpc_message_stream_accepted(client):
+    """message/stream returns an SSE response, not JSON-RPC-only 404."""
+    with client.stream(
+        "POST",
+        "/",
+        json={
+            "jsonrpc": "2.0",
+            "id": "t1",
+            "method": "message/stream",
+            "params": {
+                "message": {
+                    "messageId": "m1",
+                    "role": "user",
+                    "parts": [{"type": "text", "text": "hi"}],
+                }
+            },
+        },
+    ) as resp:
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+
+        # First frame should be a status: working event, even if hermes-agent
+        # isn't installed (we'll hit the RuntimeError path after — but the
+        # handler must at least produce the initial SSE event).
+        first_line = None
+        for raw in resp.iter_lines():
+            if raw and raw.startswith("data:"):
+                first_line = raw
+                break
+        assert first_line is not None
+        import json
+
+        payload = json.loads(first_line[len("data:"):].strip())
+        assert payload["jsonrpc"] == "2.0"
+        assert payload["id"] == "t1"
+        assert payload["result"]["taskId"]
+        # First event is `status: working` per A2A v0.4.x
+        assert payload["result"].get("status", {}).get("state") == "working"
+
+
 # ---------------------------------------------------------------------------
 # Workspace
 # ---------------------------------------------------------------------------
