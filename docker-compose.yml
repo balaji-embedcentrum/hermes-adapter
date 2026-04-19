@@ -1,0 +1,61 @@
+# hermes-adapter runs as a sidecar next to stock hermes-agent.
+#
+# Usage:
+#   docker compose up              # adapter only (workspace + A2A)
+#   docker compose --profile full up   # adapter + hermes-agent gateway
+#
+# Notes:
+#   * The `hermes-agent` service uses the upstream image — no fork required.
+#   * Workspaces and the Hermes home directory are bind-mounted so both services
+#     see the same files.
+#   * Override environment variables in a local .env file (see .env.example).
+
+services:
+  adapter:
+    image: hermes-adapter:latest
+    build:
+      context: .
+    container_name: hermes-adapter
+    restart: unless-stopped
+    ports:
+      - "${HERMES_ADAPTER_PORT:-8766}:8766"
+      - "${A2A_PORT:-9000}:9000"
+    environment:
+      HERMES_WORKSPACE_DIR: /workspaces
+      HERMES_ADAPTER_HOST: 0.0.0.0
+      HERMES_ADAPTER_PORT: 8766
+      A2A_HOST: 0.0.0.0
+      A2A_PORT: 9000
+      A2A_KEY: ${A2A_KEY:-}
+      A2A_PUBLIC_URL: ${A2A_PUBLIC_URL:-}
+      AGENT_NAME: ${AGENT_NAME:-hermes-agent}
+      AGENT_DESCRIPTION: ${AGENT_DESCRIPTION:-}
+      AGENT_SKILLS: ${AGENT_SKILLS:-}
+      AGENT_MODEL: ${AGENT_MODEL:-}
+      HERMES_AGENT_ROOT: ${HERMES_AGENT_ROOT:-}
+    volumes:
+      - ${HERMES_WORKSPACE_DIR:-./workspaces}:/workspaces
+      - ${HERMES_HOME:-~/.hermes}:/root/.hermes
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8766/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Optional: run stock hermes-agent alongside the adapter. Enable with
+  # `docker compose --profile full up`. The adapter will talk to it via A2A.
+  hermes-agent:
+    image: noushermes/hermes-agent:latest
+    container_name: hermes-agent
+    restart: unless-stopped
+    profiles: ["full"]
+    ports:
+      - "${HERMES_AGENT_PORT:-8765}:8765"
+    environment:
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: 0.0.0.0
+      API_SERVER_PORT: 8765
+      API_SERVER_KEY: ${API_SERVER_KEY:-}
+    volumes:
+      - ${HERMES_WORKSPACE_DIR:-./workspaces}:/workspaces
+      - ${HERMES_HOME:-~/.hermes}:/root/.hermes
