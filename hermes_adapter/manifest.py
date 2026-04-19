@@ -177,6 +177,18 @@ _PROVIDER_ENV = {
     "gemini/": "GEMINI_API_KEY",
     "openrouter/": "OPENROUTER_API_KEY",
     "mistral/": "MISTRAL_API_KEY",
+    "minimax/": "MINIMAX_API_KEY",
+    "minimax-cn/": "MINIMAX_API_KEY",
+    "deepseek/": "DEEPSEEK_API_KEY",
+    "nous/": "NOUS_API_KEY",
+    "zai/": "ZAI_API_KEY",
+    "glm/": "GLM_API_KEY",
+    "kimi/": "KIMI_API_KEY",
+    "moonshot/": "KIMI_API_KEY",
+    "dashscope/": "DASHSCOPE_API_KEY",
+    "qwen/": "DASHSCOPE_API_KEY",
+    "xiaomi/": "XIAOMI_API_KEY",
+    "kilocode/": "KILOCODE_API_KEY",
 }
 
 

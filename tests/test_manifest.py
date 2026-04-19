@@ -18,6 +18,14 @@ def test_provider_env_var_prefixes():
     assert provider_env_var("openai/gpt-5") == "OPENAI_API_KEY"
     assert provider_env_var("google/gemini-2.0-flash") == "GEMINI_API_KEY"
     assert provider_env_var("openrouter/meta-llama/llama-3.1-70b") == "OPENROUTER_API_KEY"
+    assert provider_env_var("minimax/MiniMax-M2.7") == "MINIMAX_API_KEY"
+    assert provider_env_var("minimax-cn/MiniMax-M2.7") == "MINIMAX_API_KEY"
+    assert provider_env_var("deepseek/deepseek-chat") == "DEEPSEEK_API_KEY"
+    assert provider_env_var("nous/hermes-3") == "NOUS_API_KEY"
+    assert provider_env_var("zai/glm-4.6") == "ZAI_API_KEY"
+    assert provider_env_var("kimi/k2") == "KIMI_API_KEY"
+    assert provider_env_var("moonshot/kimi-k2") == "KIMI_API_KEY"
+    assert provider_env_var("qwen/qwen-max") == "DASHSCOPE_API_KEY"
     # unknown → fall back to OpenAI-compatible
     assert provider_env_var("mystery/model") == "OPENAI_API_KEY"
 
