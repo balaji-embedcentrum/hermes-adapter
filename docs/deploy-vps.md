@@ -53,49 +53,91 @@ SSH into the VPS as root or a sudo user.
 curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker "$USER"   # log out/in after this
 
-# Folders
-sudo mkdir -p /srv/hermes/{workspaces,hermes-home}
-sudo chown -R "$USER":"$USER" /srv/hermes
+# Folders: one shared workspace volume, one folder per agent's config
+sudo mkdir -p /srv/hermes/workspaces
+sudo mkdir -p /srv/hermes-agents/{alpha,beta,gamma}    # add more here as you scale
+sudo chown -R "$USER":"$USER" /srv/hermes /srv/hermes-agents
 cd /srv/hermes
 ```
 
-## Step 2 — Write `/srv/hermes/.env`
+**Why two folders.** `/srv/hermes/workspaces` holds every agent's repos — shared, because any agent can read/write any repo. `/srv/hermes-agents/<name>/` holds **that agent's** `.env` and `config.yaml` — private, because alpha uses Claude while beta uses a local Llama.
 
-hermes-agent is provider-agnostic — set only the key for the LLM provider you're actually using.
+## Step 2 — Two tiers of config: stack-level vs per-agent
+
+### 2a. Stack-level `/srv/hermes/.env` — only what's truly shared
+
+The adapter does NOT need any model config. This file holds:
+
+- `A2A_KEY` — bearer token every caller must present (shared so Studio only has to know one token)
+- `PUBLIC_API_HOST` — the hostname Traefik serves on
+- Path variables
 
 ```bash
 cat > /srv/hermes/.env <<'EOF'
-# --- Model provider (pick one; uncomment what you use) ---
-# ANTHROPIC_API_KEY=sk-ant-...
-# OPENAI_API_KEY=sk-...
-# GEMINI_API_KEY=...
-# OPENROUTER_API_KEY=sk-or-...
-# Self-hosted OpenAI-compatible endpoint (Ollama, vLLM, LM Studio, ...)
-# OPENAI_API_KEY=dummy
-# OPENAI_BASE_URL=http://ollama:11434/v1
-
-# --- Bearer token the adapter + every A2A endpoint require ---
+# Bearer token that every caller (Studio, Akela) presents to reach the agents
 A2A_KEY=replace-with-long-random-string
 
-# --- Public URL your Studio / Akela UI will call (points at Traefik) ---
+# Public URL your Studio / Akela UI will call. Points at Traefik.
 PUBLIC_API_HOST=api.your-domain.com
 
-# --- Host paths (do not change unless you moved the folders above) ---
+# Host path where every agent's repos live (shared volume)
 HERMES_WORKSPACE_DIR=/srv/hermes/workspaces
-HERMES_HOME=/srv/hermes/hermes-home
+
+# Parent of per-agent HERMES_HOME folders
+HERMES_AGENTS_ROOT=/srv/hermes-agents
 EOF
 chmod 600 /srv/hermes/.env
 ```
 
-You also need to tell hermes which model to use by default. Edit `/srv/hermes/hermes-home/config.yaml`:
+**No model keys here.** They go in the per-agent files below.
 
-```yaml
+### 2b. Per-agent `.env` + `config.yaml` — each agent picks its own model
+
+Each agent gets its own folder under `/srv/hermes-agents/`. That folder is mounted into the container as `/root/.hermes`. Inside:
+
+- `.env` holds the LLM provider key **for this agent only**
+- `config.yaml` picks **this agent's** default model
+
+**alpha — Claude Sonnet (code review)**
+```bash
+cat > /srv/hermes-agents/alpha/.env <<'EOF'
+ANTHROPIC_API_KEY=sk-ant-...
+EOF
+chmod 600 /srv/hermes-agents/alpha/.env
+
+cat > /srv/hermes-agents/alpha/config.yaml <<'EOF'
 model:
-  default: anthropic/claude-sonnet-4.6   # or openai/gpt-5, google/gemini-2.0-flash,
-                                         # openrouter/meta-llama/llama-3.1-70b, etc.
+  default: anthropic/claude-sonnet-4.6
+EOF
 ```
 
-Whatever you pick here must match the key you set above.
+**beta — Llama 3.1 70B via OpenRouter (fast triage)**
+```bash
+cat > /srv/hermes-agents/beta/.env <<'EOF'
+OPENROUTER_API_KEY=sk-or-...
+EOF
+chmod 600 /srv/hermes-agents/beta/.env
+
+cat > /srv/hermes-agents/beta/config.yaml <<'EOF'
+model:
+  default: openrouter/meta-llama/llama-3.1-70b-instruct
+EOF
+```
+
+**gamma — Gemini (research)**
+```bash
+cat > /srv/hermes-agents/gamma/.env <<'EOF'
+GEMINI_API_KEY=...
+EOF
+chmod 600 /srv/hermes-agents/gamma/.env
+
+cat > /srv/hermes-agents/gamma/config.yaml <<'EOF'
+model:
+  default: google/gemini-2.0-flash
+EOF
+```
+
+Each agent is now isolated: alpha's Anthropic key cannot be used by beta, and beta's Llama choice doesn't leak into gamma.
 
 ## Step 3 — Write `/srv/hermes/docker-compose.yml`
 
@@ -105,48 +147,48 @@ This example runs **3 agents** (`alpha`, `beta`, `gamma`). Copy-paste the `herme
 # /srv/hermes/docker-compose.yml
 name: hermes-stack
 
+# Common bits for every agent. Each agent overrides HERMES_HOME + env_file
+# so it uses its own model + its own provider key.
 x-hermes-agent-common: &hermes-agent-common
   image: noushermes/hermes-agent:latest
   restart: unless-stopped
-  env_file: .env
   environment:
     A2A_HOST: 0.0.0.0
     A2A_PORT: 9000
     A2A_KEY: ${A2A_KEY}
-  volumes:
-    - ${HERMES_WORKSPACE_DIR}:/workspaces
-    - ${HERMES_HOME}:/root/.hermes
   command: ["hermes-a2a"]
 
 services:
-  # --- One shared adapter for all agents ------------------------------------
+  # --- One shared adapter for all agents (no model config) ------------------
   adapter:
     image: ghcr.io/balaji-embedcentrum/hermes-adapter:latest
     restart: unless-stopped
-    env_file: .env
     environment:
       HERMES_ADAPTER_HOST: 0.0.0.0
       HERMES_ADAPTER_PORT: 8766
       HERMES_WORKSPACE_DIR: /workspaces
     volumes:
       - ${HERMES_WORKSPACE_DIR}:/workspaces
-      - ${HERMES_HOME}:/root/.hermes
-    command: ["hermes-adapter", "workspace"]    # A2A is inside each agent
+    command: ["hermes-adapter", "workspace"]    # A2A lives in each agent
     labels:
       - traefik.enable=true
       - traefik.http.routers.ws.rule=Host(`${PUBLIC_API_HOST}`) && PathPrefix(`/ws`)
       - traefik.http.services.ws.loadbalancer.server.port=8766
 
-  # --- One agent container per persona --------------------------------------
+  # --- alpha: Claude Sonnet, code review ------------------------------------
   hermes-agent-alpha:
     <<: *hermes-agent-common
     container_name: hermes-agent-alpha
+    env_file: ${HERMES_AGENTS_ROOT}/alpha/.env          # its own API key
     environment:
       A2A_HOST: 0.0.0.0
       A2A_PORT: 9000
       A2A_KEY: ${A2A_KEY}
       AGENT_NAME: alpha
-      AGENT_DESCRIPTION: Generic hermes agent (alpha)
+      AGENT_DESCRIPTION: Code review (Claude Sonnet)
+    volumes:
+      - ${HERMES_WORKSPACE_DIR}:/workspaces
+      - ${HERMES_AGENTS_ROOT}/alpha:/root/.hermes        # its own config.yaml
     labels:
       - traefik.enable=true
       - traefik.http.routers.alpha.rule=Host(`${PUBLIC_API_HOST}`) && PathPrefix(`/a2a/alpha`)
@@ -154,15 +196,20 @@ services:
       - traefik.http.middlewares.alpha-strip.stripprefix.prefixes=/a2a/alpha
       - traefik.http.services.alpha.loadbalancer.server.port=9000
 
+  # --- beta: Llama 3.1 via OpenRouter, fast triage --------------------------
   hermes-agent-beta:
     <<: *hermes-agent-common
     container_name: hermes-agent-beta
+    env_file: ${HERMES_AGENTS_ROOT}/beta/.env
     environment:
       A2A_HOST: 0.0.0.0
       A2A_PORT: 9000
       A2A_KEY: ${A2A_KEY}
       AGENT_NAME: beta
-      AGENT_DESCRIPTION: Generic hermes agent (beta)
+      AGENT_DESCRIPTION: Fast triage (Llama 3.1 via OpenRouter)
+    volumes:
+      - ${HERMES_WORKSPACE_DIR}:/workspaces
+      - ${HERMES_AGENTS_ROOT}/beta:/root/.hermes
     labels:
       - traefik.enable=true
       - traefik.http.routers.beta.rule=Host(`${PUBLIC_API_HOST}`) && PathPrefix(`/a2a/beta`)
@@ -170,15 +217,20 @@ services:
       - traefik.http.middlewares.beta-strip.stripprefix.prefixes=/a2a/beta
       - traefik.http.services.beta.loadbalancer.server.port=9000
 
+  # --- gamma: Gemini, research ----------------------------------------------
   hermes-agent-gamma:
     <<: *hermes-agent-common
     container_name: hermes-agent-gamma
+    env_file: ${HERMES_AGENTS_ROOT}/gamma/.env
     environment:
       A2A_HOST: 0.0.0.0
       A2A_PORT: 9000
       A2A_KEY: ${A2A_KEY}
       AGENT_NAME: gamma
-      AGENT_DESCRIPTION: Generic hermes agent (gamma)
+      AGENT_DESCRIPTION: Research (Gemini)
+    volumes:
+      - ${HERMES_WORKSPACE_DIR}:/workspaces
+      - ${HERMES_AGENTS_ROOT}/gamma:/root/.hermes
     labels:
       - traefik.enable=true
       - traefik.http.routers.gamma.rule=Host(`${PUBLIC_API_HOST}`) && PathPrefix(`/a2a/gamma`)
@@ -204,6 +256,11 @@ services:
       - /srv/hermes/letsencrypt:/letsencrypt
 ```
 
+The key lines to notice:
+- `adapter` has **no** `env_file` and **no** model env vars — it's filesystem-only
+- Each `hermes-agent-*` has its own `env_file` and mounts its own `HERMES_HOME` at `/root/.hermes`
+- `A2A_KEY` is pulled from the shared stack env (bearer is the same for every agent)
+
 ### To add more agents (up to 30+)
 
 Copy one of the `hermes-agent-*` blocks and change four things: service key, `container_name`, `AGENT_NAME`, and the Traefik prefix (`/a2a/<name>`). Nothing else.
@@ -213,17 +270,29 @@ A tiny generator script helps:
 ```bash
 cat > /srv/hermes/generate-agents.sh <<'EOF'
 #!/usr/bin/env bash
+# Usage: ./generate-agents.sh alpha beta gamma ...
+# Also creates the per-agent config folder if missing.
 set -e
 for name in "$@"; do
+  mkdir -p /srv/hermes-agents/"$name"
+  [ -f /srv/hermes-agents/"$name"/.env ] || touch /srv/hermes-agents/"$name"/.env
+  [ -f /srv/hermes-agents/"$name"/config.yaml ] || cat > /srv/hermes-agents/"$name"/config.yaml <<YAML
+model:
+  default: anthropic/claude-sonnet-4.6    # edit to the model this agent should use
+YAML
 cat <<YAML
   hermes-agent-${name}:
     <<: *hermes-agent-common
     container_name: hermes-agent-${name}
+    env_file: \${HERMES_AGENTS_ROOT}/${name}/.env
     environment:
       A2A_HOST: 0.0.0.0
       A2A_PORT: 9000
       A2A_KEY: \${A2A_KEY}
       AGENT_NAME: ${name}
+    volumes:
+      - \${HERMES_WORKSPACE_DIR}:/workspaces
+      - \${HERMES_AGENTS_ROOT}/${name}:/root/.hermes
     labels:
       - traefik.enable=true
       - traefik.http.routers.${name}.rule=Host(\`\${PUBLIC_API_HOST}\`) && PathPrefix(\`/a2a/${name}\`)
@@ -235,11 +304,11 @@ done
 EOF
 chmod +x /srv/hermes/generate-agents.sh
 
-# Example: print blocks for 30 agents
+# Example: print blocks for 30 agents (also scaffolds their config folders)
 ./generate-agents.sh agent-{01..30}
 ```
 
-Paste the output under `services:` in `docker-compose.yml`.
+Paste the output under `services:` in `docker-compose.yml`, then fill in each agent's `.env` + edit its `config.yaml` to pick the model for that agent.
 
 ## Step 4 — Bring the stack up
 
@@ -287,8 +356,10 @@ Studio calls `${HERMES_ADAPTER_URL}/ws/<repo>/*` for files, and `${HERMES_A2A_BA
 | Tail logs for one agent | `docker compose logs -f hermes-agent-alpha` |
 | Restart a single agent | `docker compose restart hermes-agent-alpha` |
 | Update everything | `docker compose pull && docker compose up -d` |
-| Add a 31st agent | Append a block to `docker-compose.yml`, `docker compose up -d` |
-| Rotate the A2A key | Edit `.env`, `docker compose up -d` (recreates all) |
+| Add a 31st agent | `./generate-agents.sh newname >> docker-compose.yml` → edit its `.env` + `config.yaml` → `docker compose up -d` |
+| Change alpha's model | Edit `/srv/hermes-agents/alpha/config.yaml` → `docker compose restart hermes-agent-alpha` (no other agent affected) |
+| Swap alpha from Claude to GPT | Replace `ANTHROPIC_API_KEY` with `OPENAI_API_KEY` in `/srv/hermes-agents/alpha/.env`, update its `config.yaml`, restart just that container |
+| Rotate the shared A2A key | Edit `/srv/hermes/.env` `A2A_KEY`, `docker compose up -d` (recreates all agents) |
 
 ---
 

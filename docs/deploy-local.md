@@ -53,60 +53,78 @@ cd hermes-adapter
 pip install -e '.[a2a]'
 ```
 
-## Step 3 — One shared config
+## Step 3 — Per-agent configs (each agent picks its own model)
 
-hermes-agent is provider-agnostic. Use **whichever model provider you want**. Put its API key in `~/.hermes/.env` — set only the one(s) you actually use.
+Each agent gets its own `HERMES_HOME` directory. That directory holds `.env` and `config.yaml` for **that agent only** — model, provider key, persona, toolsets. The adapter never touches these.
 
 ```bash
-mkdir -p ~/.hermes ~/hermes-workspaces
+mkdir -p ~/hermes-workspaces ~/hermes-agents/{alpha,beta,gamma}
+```
 
-cat > ~/.hermes/.env <<'EOF'
-# --- Pick ONE (or more) model providers ---
-# Anthropic Claude
-# ANTHROPIC_API_KEY=sk-ant-...
+Now give each agent its own config. Example: `alpha` does code review on Claude Sonnet, `beta` does fast triage on a local Llama via Ollama, `gamma` does research on Gemini.
 
-# OpenAI (GPT-4, GPT-5, o1, ...)
-# OPENAI_API_KEY=sk-...
-
-# Google Gemini
-# GEMINI_API_KEY=...
-
-# OpenRouter (routes to any of the above + Llama, Mistral, DeepSeek, Qwen, ...)
-# OPENROUTER_API_KEY=sk-or-...
-
-# Local / self-hosted via an OpenAI-compatible endpoint (Ollama, vLLM, LM Studio, ...)
-# OPENAI_API_KEY=dummy
-# OPENAI_BASE_URL=http://localhost:11434/v1
-
-# --- A2A bearer token (required; any long random string) ---
+**`~/hermes-agents/alpha/.env`** — Claude Sonnet
+```bash
+cat > ~/hermes-agents/alpha/.env <<'EOF'
+ANTHROPIC_API_KEY=sk-ant-...
 A2A_KEY=local-dev-key-change-me
 EOF
-chmod 600 ~/.hermes/.env
-```
+chmod 600 ~/hermes-agents/alpha/.env
 
-Then tell hermes which model to use by default — `~/.hermes/config.yaml`:
-
-```yaml
-# Pick the one that matches the key you set above.
+cat > ~/hermes-agents/alpha/config.yaml <<'EOF'
 model:
-  default: anthropic/claude-sonnet-4.6    # or openai/gpt-5, google/gemini-2.0-flash,
-                                          # openrouter/meta-llama/llama-3.1-70b, etc.
+  default: anthropic/claude-sonnet-4.6
+EOF
 ```
 
-Every agent and the adapter read from `~/.hermes/.env` and `~/.hermes/config.yaml` automatically.
+**`~/hermes-agents/beta/.env`** — local Llama via Ollama
+```bash
+cat > ~/hermes-agents/beta/.env <<'EOF'
+OPENAI_API_KEY=dummy
+OPENAI_BASE_URL=http://localhost:11434/v1
+A2A_KEY=local-dev-key-change-me
+EOF
+chmod 600 ~/hermes-agents/beta/.env
 
-## Step 4 — Smoke test hermes itself
+cat > ~/hermes-agents/beta/config.yaml <<'EOF'
+model:
+  default: openai/llama3.1
+EOF
+```
+
+**`~/hermes-agents/gamma/.env`** — Gemini
+```bash
+cat > ~/hermes-agents/gamma/.env <<'EOF'
+GEMINI_API_KEY=...
+A2A_KEY=local-dev-key-change-me
+EOF
+chmod 600 ~/hermes-agents/gamma/.env
+
+cat > ~/hermes-agents/gamma/config.yaml <<'EOF'
+model:
+  default: google/gemini-2.0-flash
+EOF
+```
+
+Only `A2A_KEY` is shared — because Studio sends the same bearer when calling any of the three.
+
+The adapter itself needs **no** model config. It only cares about the workspace root (step 5).
+
+## Step 4 — Smoke test one agent's config
+
+Pick any of the three and run `hermes chat` against its personal config:
 
 ```bash
-hermes chat
+HERMES_HOME=~/hermes-agents/alpha hermes chat
 ```
 
 Type `hi`, press Enter. If you get a reply, press `Ctrl+D` to quit.
-If it fails, nothing else below will work — fix this first.
+Repeat for `beta` and `gamma` to confirm each agent's key/model works on its own.
+If any one fails, nothing else below will work for that agent — fix its `.env`/`config.yaml` first.
 
 ## Step 5 — Start the shared workspace adapter
 
-Open **Terminal 1**:
+Open **Terminal 1**. The adapter takes **no** model keys — only the workspace root.
 
 ```bash
 source ~/.hermes-venv/bin/activate
@@ -128,29 +146,41 @@ curl http://127.0.0.1:8766/health
 # → {"status":"ok","service":"hermes-adapter-workspace"}
 ```
 
-## Step 6 — Start each agent on its own port
+## Step 6 — Start each agent with its own HERMES_HOME
 
-Open **Terminal 2** (agent `alpha`):
+Each agent picks up its own provider key and model from its own `HERMES_HOME`. Open one terminal per agent.
 
+**Terminal 2 — alpha (Claude)**
 ```bash
 source ~/.hermes-venv/bin/activate
+export HERMES_HOME=~/hermes-agents/alpha
 export AGENT_NAME=alpha
-export AGENT_DESCRIPTION="Generic hermes agent (alpha)"
+export AGENT_DESCRIPTION="Code review (Claude Sonnet)"
 export A2A_PORT=9001
 hermes-a2a
 ```
 
-Open **Terminal 3** (agent `beta`):
-
+**Terminal 3 — beta (local Llama)**
 ```bash
 source ~/.hermes-venv/bin/activate
+export HERMES_HOME=~/hermes-agents/beta
 export AGENT_NAME=beta
-export AGENT_DESCRIPTION="Generic hermes agent (beta)"
+export AGENT_DESCRIPTION="Fast triage (local Llama)"
 export A2A_PORT=9002
 hermes-a2a
 ```
 
-Repeat per agent — each gets its own port. Typical local setup is 2–5 agents.
+**Terminal 4 — gamma (Gemini)**
+```bash
+source ~/.hermes-venv/bin/activate
+export HERMES_HOME=~/hermes-agents/gamma
+export AGENT_NAME=gamma
+export AGENT_DESCRIPTION="Research (Gemini)"
+export A2A_PORT=9003
+hermes-a2a
+```
+
+Each agent talks to a different LLM, with a different key, a different model, a different persona — and they all answer on different ports. Add more agents by copying a folder under `~/hermes-agents/`, editing its `.env` + `config.yaml`, and starting another terminal.
 
 Verify:
 
@@ -205,23 +235,28 @@ pkill -f "hermes-adapter workspace" || true
 pkill -f "hermes-a2a" || true
 sleep 1
 
-mkdir -p ~/.hermes/logs
+mkdir -p ~/hermes-agents/logs
 
+# Shared adapter — no model config needed
 hermes-adapter workspace --host 127.0.0.1 --port 8766 \
-  > ~/.hermes/logs/adapter.log 2>&1 &
+  > ~/hermes-agents/logs/adapter.log 2>&1 &
 
+# Each agent points at its own HERMES_HOME, so its own key/model/persona
 for spec in "alpha:9001" "beta:9002" "gamma:9003"; do
   name="${spec%%:*}"
   port="${spec##*:}"
-  AGENT_NAME="$name" A2A_PORT="$port" nohup hermes-a2a \
-    > ~/.hermes/logs/"$name".log 2>&1 &
+  HERMES_HOME=~/hermes-agents/"$name" \
+    AGENT_NAME="$name" \
+    A2A_PORT="$port" \
+    nohup hermes-a2a \
+    > ~/hermes-agents/logs/"$name".log 2>&1 &
 done
 
 sleep 2
 echo "── running ──"
 ps -ef | grep -E "hermes-(a2a|adapter)" | grep -v grep
 echo
-echo "Logs: ~/.hermes/logs/"
+echo "Logs: ~/hermes-agents/logs/"
 echo "Stop:  pkill -f 'hermes-(a2a|adapter)'"
 ```
 
@@ -236,17 +271,29 @@ To stop everything: `pkill -f 'hermes-(a2a|adapter)'`.
 
 ## Reference: which env vars matter where
 
-| Variable | Used by | What it does |
-|---|---|---|
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` / `OPENROUTER_API_KEY` | every `hermes-a2a` | Lets the agent call the LLM provider you chose |
-| `OPENAI_BASE_URL` | every `hermes-a2a` (optional) | Points hermes at a local / self-hosted OpenAI-compatible endpoint |
-| `A2A_PORT` | `hermes-a2a` | Which port this agent listens on |
-| `AGENT_NAME`, `AGENT_DESCRIPTION` | `hermes-a2a` | What shows up in the Agent Card |
-| `A2A_KEY` | `hermes-a2a` (optional) | Bearer token callers must present |
-| `HERMES_WORKSPACE_DIR` | `hermes-adapter workspace` | Root folder for all workspaces |
-| `HERMES_ADAPTER_PORT` | `hermes-adapter workspace` | Port the workspace API listens on |
+Two clean groups — per-agent (LLM stuff, lives in each agent's `HERMES_HOME/.env`) and shared (adapter stuff, set in the terminal that starts the adapter).
 
-Anything in `~/.hermes/.env` is auto-loaded by both commands.
+### Per-agent (one set per `hermes-a2a` process)
+
+| Variable | What it does |
+|---|---|
+| `HERMES_HOME` | Points hermes-agent at this agent's config folder. **Drives everything below.** |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` / `OPENROUTER_API_KEY` | The one key that matches **this agent's** chosen provider. Inside `HERMES_HOME/.env`. |
+| `OPENAI_BASE_URL` | Points at a local / self-hosted OpenAI-compatible endpoint (Ollama, vLLM, LM Studio). |
+| `A2A_PORT` | Which port this agent listens on |
+| `AGENT_NAME`, `AGENT_DESCRIPTION` | What shows up in this agent's Agent Card |
+| `A2A_KEY` | Bearer token callers must present to this agent (can be per-agent or shared across all agents — your call) |
+
+Model + provider are picked per-agent via `HERMES_HOME/config.yaml` (`model.default: anthropic/claude-sonnet-4.6`, etc.).
+
+### Adapter (one set, shared)
+
+| Variable | What it does |
+|---|---|
+| `HERMES_WORKSPACE_DIR` | Root folder where all agents' repos live |
+| `HERMES_ADAPTER_HOST`, `HERMES_ADAPTER_PORT` | Where the workspace API listens |
+
+**The adapter takes zero model config.** It never calls an LLM — it only reads/writes files and runs git. Model keys belong inside each agent's `HERMES_HOME`, not in the adapter's environment.
 
 ---
 
