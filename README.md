@@ -13,27 +13,53 @@ Designed for projects like **Hermes Studio** and **Akela** that need hermes-agen
 
 `hermes-adapter` packages both as a separate, pip-installable sidecar. Run it alongside stock `hermes-agent` — zero fork maintenance.
 
-## Install
+## Install — one command, pick your path
+
+Four installers cover every combination of **runtime** (Python venv vs Docker) and **starting state** (fresh vs already-have-hermes). Full table: [docs/install.md](docs/install.md).
 
 ```bash
-# workspace API only (no hermes-agent required at runtime)
-pip install hermes-adapter
+# 1. venv + fresh install (laptop / simple VPS)
+curl -fsSL https://raw.githubusercontent.com/balaji-embedcentrum/hermes-adapter/main/scripts/install.sh | bash
 
-# with A2A server (needs hermes-agent importable on PYTHONPATH)
-pip install 'hermes-adapter[a2a]'
+# 2. docker + fresh install (VPS)
+curl -fsSL https://raw.githubusercontent.com/balaji-embedcentrum/hermes-adapter/main/scripts/install-docker.sh | bash
+
+# 3 + 4. adapter only — you already have hermes (auto-detects venv vs docker)
+curl -fsSL https://raw.githubusercontent.com/balaji-embedcentrum/hermes-adapter/main/scripts/install-adapter.sh | bash
 ```
 
-## Run
+Or, if you want the package yourself:
 
 ```bash
-# workspace API on :8766
-hermes-adapter-workspace
+pip install 'hermes-adapter[a2a]'   # requires hermes-agent importable at runtime for the A2A server
+```
 
-# A2A server on :9000 (requires hermes-agent)
-hermes-adapter-a2a
+## Use
 
-# both, via one CLI
-hermes-adapter serve --workspace-port 8766 --a2a-port 9000
+Each install path bootstraps `~/.hermes-adapter/agents.yaml`. After that:
+
+```bash
+# add each agent (repeat per model / provider / persona)
+hermes-adapter agent add alpha --model anthropic/claude-sonnet-4.6 --prompt-key
+hermes-adapter agent add beta  --model openrouter/meta-llama/llama-3.1-70b-instruct --prompt-key
+
+# venv mode: supervisor runs workspace API + every agent under one parent process
+hermes-adapter up                # Ctrl-C to stop
+hermes-adapter up --detach       # background
+hermes-adapter status
+hermes-adapter down
+
+# docker mode: generate compose from the same agents.yaml
+hermes-adapter compose generate -o docker-compose.yml
+docker compose up -d
+```
+
+Power-user commands (when you don't want the supervisor / no manifest yet):
+
+```bash
+hermes-adapter workspace         # just the workspace API
+hermes-adapter a2a               # just the A2A server (requires hermes-agent)
+hermes-adapter serve             # both from env vars, single-process
 ```
 
 ## Endpoints
@@ -97,11 +123,12 @@ Brings up `hermes-agent` on `:8765` and `hermes-adapter` on `:8766` (workspace) 
 
 ## Deployment guides
 
-Every Hermes Studio user plugs in agents from one of three places. All three use the same wire protocol — only the hostnames and TLS change. See [docs/agent-sources.md](docs/agent-sources.md) for the mental model, then pick your tier:
+See [docs/install.md](docs/install.md) for the 4-path installer matrix, then pick the deployment tier that matches your setup:
 
 - [docs/deploy-local.md](docs/deploy-local.md) — **tier 1:** user's laptop, hosted Studio calls `127.0.0.1:*` via CORS
 - [docs/deploy-user-vps.md](docs/deploy-user-vps.md) — **tier 2:** user's own single-tenant VPS, Caddy + systemd
 - [docs/deploy-vps.md](docs/deploy-vps.md) — **tier 3:** platform operator (hermes-studio.com) runs the multi-tenant fleet
+- [docs/agent-sources.md](docs/agent-sources.md) — the three-tier mental model for Studio operators
 
 ## Integration
 
