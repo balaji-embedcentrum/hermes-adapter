@@ -50,7 +50,13 @@ class AdapterBlock:
     workspace_dir: str = str(DEFAULT_WORKSPACE)
     host: str = "127.0.0.1"
     port: int = 8766
-    cors_origins: list[str] = field(default_factory=lambda: ["https://hermes-studio.com"])
+    # Known browser consumers of a user's local gateway. Extend with
+    # `hermes-adapter init --cors-origins "..."` or by editing agents.yaml.
+    # Using explicit origins rather than "*" so Studio / Akela can pass
+    # credentialed requests later without breaking.
+    cors_origins: list[str] = field(
+        default_factory=lambda: ["https://hermes-studio.com", "https://akela-ai.com"]
+    )
 
 
 @dataclass

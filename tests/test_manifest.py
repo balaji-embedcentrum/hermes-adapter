@@ -37,6 +37,12 @@ def test_default_manifest_has_fresh_bearer():
     assert len(m.a2a_key) >= 32  # secrets.token_urlsafe(32) → 43+ chars base64
 
 
+def test_default_manifest_includes_both_known_studio_and_akela_origins():
+    m = default_manifest()
+    assert "https://hermes-studio.com" in m.adapter.cors_origins
+    assert "https://akela-ai.com" in m.adapter.cors_origins
+
+
 def test_add_rejects_duplicates_and_port_collisions():
     m = default_manifest()
     m.add(AgentSpec(name="alpha", port=9001, model="anthropic/claude-sonnet-4.6"))
