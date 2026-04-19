@@ -75,12 +75,12 @@ pip install --upgrade pip >/dev/null
 
 # --- 3. Install hermes-agent + hermes-adapter -------------------------------
 
-# hermes-agent from source (upstream is not on PyPI as of writing)
+# hermes-agent from source (upstream is not on PyPI as of writing).
+# Use PEP 508 direct-URL syntax so extras are attached correctly on modern pip.
 say "installing hermes-agent@${HERMES_AGENT_REF}"
-pip install "git+https://github.com/NousResearch/hermes-agent.git@${HERMES_AGENT_REF}#egg=hermes-agent[a2a]"
+pip install "hermes-agent[a2a] @ git+https://github.com/NousResearch/hermes-agent.git@${HERMES_AGENT_REF}"
 
 # hermes-adapter: prefer a local editable install if this script lives in a clone
-ADAPTER_INSTALL="git+https://github.com/balaji-embedcentrum/hermes-adapter.git@${HERMES_ADAPTER_REF}#egg=hermes-adapter[a2a]"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 REPO_ROOT="$(dirname -- "$SCRIPT_DIR")"
 if [ -f "$REPO_ROOT/pyproject.toml" ] && grep -q "hermes-adapter" "$REPO_ROOT/pyproject.toml" 2>/dev/null; then
@@ -88,7 +88,7 @@ if [ -f "$REPO_ROOT/pyproject.toml" ] && grep -q "hermes-adapter" "$REPO_ROOT/py
   pip install -e "${REPO_ROOT}[a2a]"
 else
   say "installing hermes-adapter@${HERMES_ADAPTER_REF}"
-  pip install "$ADAPTER_INSTALL"
+  pip install "hermes-adapter[a2a] @ git+https://github.com/balaji-embedcentrum/hermes-adapter.git@${HERMES_ADAPTER_REF}"
 fi
 
 ok "packages installed"

@@ -97,7 +97,7 @@ install_venv() {
   if [ -f "$REPO_ROOT/pyproject.toml" ] && grep -q "hermes-adapter" "$REPO_ROOT/pyproject.toml" 2>/dev/null; then
     pip install -e "${REPO_ROOT}[a2a]"
   else
-    pip install "git+https://github.com/balaji-embedcentrum/hermes-adapter.git@${HERMES_ADAPTER_REF}#egg=hermes-adapter[a2a]"
+    pip install "hermes-adapter[a2a] @ git+https://github.com/balaji-embedcentrum/hermes-adapter.git@${HERMES_ADAPTER_REF}"
   fi
 
   ok "adapter installed"
