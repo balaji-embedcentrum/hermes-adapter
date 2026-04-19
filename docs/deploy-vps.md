@@ -170,6 +170,13 @@ services:
     volumes:
       - ${HERMES_WORKSPACE_DIR}:/workspaces
     command: ["hermes-adapter", "workspace"]    # A2A lives in each agent
+    environment:
+      HERMES_ADAPTER_HOST: 0.0.0.0
+      HERMES_ADAPTER_PORT: 8766
+      HERMES_WORKSPACE_DIR: /workspaces
+      # Origins allowed to call the adapter from a user's browser.
+      # Add every Studio / Akela UI that your users load.
+      HERMES_ADAPTER_CORS_ORIGINS: ${HERMES_ADAPTER_CORS_ORIGINS:-https://studio.example.com}
     labels:
       - traefik.enable=true
       - traefik.http.routers.ws.rule=Host(`${PUBLIC_API_HOST}`) && PathPrefix(`/ws`)

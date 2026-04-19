@@ -1,28 +1,32 @@
-# Local setup — hermes agents + hermes-adapter + Hermes Studio
+# Local agents + hosted Hermes Studio
 
-For a single laptop with a handful of agents. Everything runs on localhost. No Docker required.
+**Scenario.** You're a user (say, in Madagascar). Hermes Studio is already deployed somewhere — e.g. `https://studio.example.com`. You want to run your own hermes agents on your laptop and use the hosted Studio as the UI for them.
+
+Studio's server never touches your agents. Your **browser** — which lives on your laptop — makes HTTP calls directly to your local adapter and local agents. This is the simplest and most private way to use hosted Studio with BYO local agents.
 
 ## The shape you're building
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│ Your laptop                                                  │
-│                                                              │
-│   Hermes Studio (localhost:3000)                             │
-│       │                                                      │
-│       ├── workspace:  http://localhost:8766/ws/*  ──┐         │
-│       └── chat:       http://localhost:9001..9003 ─┼─┐        │
-│                                                   ▼ ▼        │
-│   hermes-adapter                 hermes-a2a      hermes-a2a   │
-│   workspace only :8766           agent-alpha     agent-beta   │
-│                                  :9001           :9002        │
-│                                                               │
-│                       shared folder: ~/hermes-workspaces/     │
-│                       shared config: ~/.hermes/               │
-└─────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────┐       ┌─────────────────────────┐
+│ Your laptop (Madagascar)                       │       │ Hermes Studio (VPS)     │
+│                                                │       │ https://studio.example. │
+│   Browser opens https://studio.example.com     │◄─────►│   com                   │
+│     │                                          │       │ (serves UI JS only —    │
+│     │  JS in your browser makes fetch() calls  │       │  never touches agents)  │
+│     │  to YOUR OWN laptop:                     │       └─────────────────────────┘
+│     │                                          │
+│     ├──► http://127.0.0.1:8766/ws/*            │
+│     │    hermes-adapter (files, git, symbols)  │
+│     │                                          │
+│     ├──► http://127.0.0.1:9001/  (alpha)       │
+│     ├──► http://127.0.0.1:9002/  (beta)        │
+│     ├──► http://127.0.0.1:9003/  (gamma)       │
+│     └──► …                                     │
+│          each is a stock hermes-a2a server     │
+└───────────────────────────────────────────────┘
 ```
 
-One adapter, N agents, each on their own port. Studio talks to all of them.
+Because your browser is physically on your laptop, `http://127.0.0.1:...` points to your own machine. Modern browsers treat `localhost` / `127.0.0.1` as a [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts), so the hosted HTTPS Studio page is allowed to call `http://127.0.0.1:*` from the JS it serves. The only thing that needs to be configured is **CORS** on the adapter + agents so they allow Studio's origin.
 
 ---
 
@@ -122,15 +126,18 @@ Type `hi`, press Enter. If you get a reply, press `Ctrl+D` to quit.
 Repeat for `beta` and `gamma` to confirm each agent's key/model works on its own.
 If any one fails, nothing else below will work for that agent — fix its `.env`/`config.yaml` first.
 
-## Step 5 — Start the shared workspace adapter
+## Step 5 — Start the shared workspace adapter (with CORS for Studio)
 
-Open **Terminal 1**. The adapter takes **no** model keys — only the workspace root.
+Open **Terminal 1**. The adapter takes **no** model keys — only the workspace root and the Studio origin it should accept CORS requests from.
 
 ```bash
 source ~/.hermes-venv/bin/activate
 export HERMES_WORKSPACE_DIR=~/hermes-workspaces
+export HERMES_ADAPTER_CORS_ORIGINS=https://studio.example.com
 hermes-adapter workspace --host 127.0.0.1 --port 8766
 ```
+
+Replace `https://studio.example.com` with your actual Studio URL. You can list multiple origins with commas, or set `*` during testing (dev only — `*` lets any site on the web call your local adapter from a user's browser).
 
 You should see:
 
@@ -202,20 +209,39 @@ curl http://127.0.0.1:8766/ws | jq
 # → includes "me/myproject"
 ```
 
-## Step 8 — Point Hermes Studio at it
+## Step 8 — Tell hosted Studio where your local agents are
 
-In Studio's `.env.local`:
+Open `https://studio.example.com` in your browser, sign in, and go to **Settings → My agents** (exact label depends on your Studio build). Fill in your **user-level** config — these values never leave your browser; they're what its JS will use when making `fetch()` calls:
 
-```env
-HERMES_ADAPTER_URL=http://127.0.0.1:8766
-HERMES_A2A_AGENTS=alpha=http://127.0.0.1:9001,beta=http://127.0.0.1:9002
-HERMES_A2A_KEY=local-dev-key-change-me
+| Field | Value |
+|---|---|
+| Adapter URL | `http://127.0.0.1:8766` |
+| A2A bearer token | `local-dev-key-change-me` (the `A2A_KEY` from your agent `.env` files) |
+| Agents | `alpha=http://127.0.0.1:9001`, `beta=http://127.0.0.1:9002`, `gamma=http://127.0.0.1:9003` |
+
+What happens when you click **Save**:
+
+1. Studio stores those URLs in browser localStorage / IndexedDB
+2. Every subsequent page load, Studio's React app reads them and calls `fetch('http://127.0.0.1:8766/ws')`, `fetch('http://127.0.0.1:9001/', ...)`, etc. directly from your browser
+3. Studio's server sees none of this traffic — your chats, your files, your repos all stay on your laptop
+
+### Verify it works from the browser's perspective
+
+Before touching Studio, confirm the CORS preflight succeeds. Open **DevTools → Console** on any tab and paste:
+
+```js
+fetch("http://127.0.0.1:8766/ws", {
+  headers: { Authorization: "Bearer local-dev-key-change-me" }
+})
+  .then(r => r.json())
+  .then(console.log);
 ```
 
-Start Studio (`pnpm dev` / `npm run dev`) and open http://localhost:3000. You should see:
-- Your workspaces listed (from the adapter)
-- A dropdown to pick `alpha` or `beta` (from the A2A list)
-- Chat works against the selected agent
+You should get `{status: "ok", workspaces: [...]}`. If you get a CORS error, your `HERMES_ADAPTER_CORS_ORIGINS` doesn't match the page's origin — fix and restart the adapter.
+
+### What if Studio doesn't support BYO local agent config?
+
+If your Studio build wants to hit the agents **server-side** (for scheduled jobs, cross-device history, etc.), the browser-direct approach doesn't work — Studio's VPS can't reach `127.0.0.1` on your laptop. Use a tunnel instead. See the section below.
 
 ---
 
@@ -292,6 +318,7 @@ Model + provider are picked per-agent via `HERMES_HOME/config.yaml` (`model.defa
 |---|---|
 | `HERMES_WORKSPACE_DIR` | Root folder where all agents' repos live |
 | `HERMES_ADAPTER_HOST`, `HERMES_ADAPTER_PORT` | Where the workspace API listens |
+| `HERMES_ADAPTER_CORS_ORIGINS` | Comma-separated list of Studio / web origins whose browser JS is allowed to call this adapter. Use `*` for dev only. |
 
 **The adapter takes zero model config.** It never calls an LLM — it only reads/writes files and runs git. Model keys belong inside each agent's `HERMES_HOME`, not in the adapter's environment.
 
@@ -309,13 +336,42 @@ Model + provider are picked per-agent via `HERMES_HOME/config.yaml` (`model.defa
 
 ---
 
+## Alternative: expose your laptop via a tunnel
+
+Use this path if Studio needs to reach your agents **from its server**, not from your browser. Example reasons: a scheduled job Studio runs on your behalf at 3am while your laptop is closed (won't work — sorry) or a multi-device setup where another user should see your agent activity.
+
+Pick one tunnel provider. All three give you a free public HTTPS URL pointing at your laptop:
+
+### Cloudflare Tunnel (recommended — free, no account URL-rewriting)
+```bash
+brew install cloudflared
+cloudflared tunnel --url http://127.0.0.1:8766
+# → prints https://<random>.trycloudflare.com
+```
+
+### ngrok
+```bash
+brew install ngrok
+ngrok http 8766
+# → prints https://<random>.ngrok.io
+```
+
+### Tailscale Funnel (stable URL, requires tailscale account)
+```bash
+brew install tailscale
+sudo tailscale up
+sudo tailscale funnel 8766
+```
+
+Whichever you pick, paste the **tunnel URL** into Studio's Adapter URL field instead of `http://127.0.0.1:8766`. You'll need a separate tunnel for each agent port, or front the agents with a reverse proxy on your laptop that exposes them under one hostname with path prefixes.
+
 ## When to move from local to VPS
 
 You're ready for [deploy-vps.md](deploy-vps.md) once you:
 
-- Want Studio reachable off your laptop
+- Want agents reachable when your laptop is closed
 - Want always-on agents (systemd / Docker restart policies)
-- Need TLS (real certs via Traefik)
 - Need to run 10+ agents (laptops handle 2–5 comfortably)
+- Want multi-user / team access to the same agents
 
 The local layout maps 1:1 to the VPS layout — same one-adapter-many-agents shape, just containerized.

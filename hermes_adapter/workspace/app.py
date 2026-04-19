@@ -15,6 +15,7 @@ import sys
 from aiohttp import web
 
 from ..config import load as load_config
+from .cors import cors_middleware
 from .mount import mount_routes
 
 logger = logging.getLogger(__name__)
@@ -25,8 +26,8 @@ async def _handle_health(request: web.Request) -> web.Response:
 
 
 def build_app() -> web.Application:
-    """Build the aiohttp application with workspace routes + /health."""
-    app = web.Application()
+    """Build the aiohttp application with workspace routes + /health + CORS."""
+    app = web.Application(middlewares=[cors_middleware])
     app.router.add_get("/health", _handle_health)
     mount_routes(app)
     return app
