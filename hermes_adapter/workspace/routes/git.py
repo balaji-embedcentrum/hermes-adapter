@@ -124,8 +124,9 @@ async def handle_log(request: web.Request) -> web.Response:
         return err
 
     limit = int(request.rel_url.query.get("limit", "50"))
-    # Null byte — never appears in commit text, safer than pipe
-    SEP = "\x00"
+    # Unit Separator (0x1F) — non-printable, never appears in commit text, and
+    # (unlike NUL) allowed in subprocess argv on all platforms / Python 3.12+.
+    SEP = "\x1f"
     fmt = f"%H{SEP}%h{SEP}%an{SEP}%ae{SEP}%aI{SEP}%s{SEP}%P"
     rc, out, errout = await proc.run(
         ["git", "log", f"--format={fmt}", f"-n{limit}"], workspace  # type: ignore[arg-type]
