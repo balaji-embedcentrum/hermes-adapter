@@ -235,7 +235,7 @@ cat >> "$COMPOSE" <<YAML
     profiles: ["agents"]
     labels:
       - traefik.enable=true
-      - traefik.http.routers.$name.rule=Host(\`\${DOMAIN}\`) && PathPrefix(\`/agent-$name/v1\`)
+      - traefik.http.routers.$name.rule=Host(\`\${DOMAIN}\`) && PathPrefix(\`/agent-$name\`)
       - traefik.http.routers.$name.entrypoints=websecure
       - traefik.http.routers.$name.tls.certresolver=le
       - traefik.http.routers.$name.middlewares=$name-strip
