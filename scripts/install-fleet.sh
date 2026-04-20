@@ -187,11 +187,12 @@ for name in $AGENT_NAMES; do
     role="$(   jq -r --arg n "$name" '.[] | select(.name==$n) | .role         // ""'    "$PERSONAS_FILE")"
     skills="$( jq -r --arg n "$name" '.[] | select(.name==$n) | (.skills // [] | join(","))' "$PERSONAS_FILE")"
     personality="$(jq -r --arg n "$name" '.[] | select(.name==$n) | .personality // ""' "$PERSONAS_FILE")"
-    # Stash for step 8 to read without re-parsing
+    # Stash for step 8 to read without re-parsing. Values are shell-quoted so
+    # display names like "Anika Singh" don't get parsed as "command not found".
     cat > "$AGENT_DIR/.persona-meta" <<EOF
-display=$display
-role=$role
-skills=$skills
+display=$(printf '%q' "$display")
+role=$(printf '%q' "$role")
+skills=$(printf '%q' "$skills")
 EOF
   fi
 
