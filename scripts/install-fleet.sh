@@ -186,7 +186,7 @@ services:
   adapter:
     image: ADAPTER_IMAGE_PLACEHOLDER
     restart: unless-stopped
-    command: ["hermes-adapter", "workspace"]
+    command: ["workspace"]
     environment:
       HERMES_ADAPTER_HOST: 0.0.0.0
       HERMES_ADAPTER_PORT: 8766
