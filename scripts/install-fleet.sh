@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# hermes-adapter — Studio fleet installer (one-shot)
+# hermes-adapter — agent fleet installer (one-shot)
 #
-# Sets up a 10-agent fleet on a fresh VPS to be consumed by Hermes Studio:
+# Sets up an agent fleet on a fresh VPS, in either of two flavours:
+#   --protocol openai  (default) — for Hermes Studio
+#         hermes-agent serves the OpenAI-compatible API on /v1/*
+#   --protocol a2a                — for Akela (or any A2A orchestrator)
+#         hermes-agent serves the Agent-to-Agent JSON-RPC protocol at root
+#
+# Both flavours bring up:
 #   - 1× Traefik    (TLS via Let's Encrypt)
 #   - 1× adapter    (workspace API only — /ws/* paths, shared)
-#   - 10× hermes-agent containers running the OpenAI-compatible API server
+#   - N× hermes-agent containers (one per persona)
 #
 # After install, you fill in each agent's model + key with the generated
 # `./fleet` helper, then `./fleet up` starts the agent containers.
@@ -20,10 +26,20 @@
 #   --domain         REQUIRED. Public hostname of the agent VPS (DNS A record
 #                    must already point at this host).
 #   --acme-email     REQUIRED. Email used by Let's Encrypt for cert renewals.
-#   --studio-url     OPTIONAL. CORS origin for Studio (default: omit, since
-#                    Studio proxies server-side and CORS is not needed).
-#   --names          OPTIONAL. Space-separated agent names
-#                    (default: "emma mateo aarav mei lea sofia yuki priya lukas diego").
+#   --protocol       OPTIONAL. openai | a2a (default: openai).
+#   --studio-url     OPTIONAL. CORS origin for Studio (default: omit; only
+#                    needed for openai-protocol fleets that browser-call
+#                    the adapter directly).
+#   --names          OPTIONAL. Space-separated agent names. Mutually
+#                    exclusive with --personas-file.
+#                    (default: "emma mateo aarav mei lea sofia yuki priya lukas diego")
+#   --personas-file  OPTIONAL. Path to a JSON array of richer persona
+#                    objects: [{name, display, role, skills[], personality},
+#                    ...]. When present, populates AGENT_NAME /
+#                    AGENT_DESCRIPTION / AGENT_SKILLS env so each agent's
+#                    /.well-known/agent.json (a2a) or model card (openai)
+#                    is rendered correctly. Also seeds agents/<name>/persona.md
+#                    with the personality blurb for you to flesh out.
 #
 # Env overrides:
 #   FLEET_ROOT       install root           (default: /srv/hermes-fleet)
@@ -50,17 +66,21 @@ die()  { printf "%s✗ %s%s\n" "$C_RED" "$1" "$C_RESET" >&2; exit 1; }
 DOMAIN=""
 ACME_EMAIL=""
 STUDIO_URL=""
+PROTOCOL="openai"
+PERSONAS_FILE=""
 AGENT_NAMES_DEFAULT="emma mateo aarav mei lea sofia yuki priya lukas diego"
 AGENT_NAMES=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --domain)       DOMAIN="$2";      shift 2 ;;
-    --acme-email)   ACME_EMAIL="$2";  shift 2 ;;
-    --studio-url)   STUDIO_URL="$2";  shift 2 ;;
-    --names)        AGENT_NAMES="$2"; shift 2 ;;
+    --domain)         DOMAIN="$2";         shift 2 ;;
+    --acme-email)     ACME_EMAIL="$2";     shift 2 ;;
+    --studio-url)     STUDIO_URL="$2";     shift 2 ;;
+    --protocol)       PROTOCOL="$2";       shift 2 ;;
+    --personas-file)  PERSONAS_FILE="$2";  shift 2 ;;
+    --names)          AGENT_NAMES="$2";    shift 2 ;;
     -h|--help)
-      sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     *) die "unknown flag: $1 (try --help)" ;;
   esac
@@ -68,7 +88,32 @@ done
 
 [ -n "$DOMAIN" ]     || die "missing required --domain"
 [ -n "$ACME_EMAIL" ] || die "missing required --acme-email"
+[[ "$PROTOCOL" == "openai" || "$PROTOCOL" == "a2a" ]] \
+  || die "--protocol must be 'openai' or 'a2a' (got: $PROTOCOL)"
+[ -z "$PERSONAS_FILE" ] || [ -z "$AGENT_NAMES" ] \
+  || die "--personas-file and --names are mutually exclusive"
+[ -z "$PERSONAS_FILE" ] || [ -f "$PERSONAS_FILE" ] \
+  || die "--personas-file not found: $PERSONAS_FILE"
+
+# When --personas-file is given, jq is required to parse it
+if [ -n "$PERSONAS_FILE" ]; then
+  command -v jq >/dev/null \
+    || die "jq is required when using --personas-file. Install: sudo apt-get install -y jq"
+  AGENT_NAMES="$(jq -r '.[].name' "$PERSONAS_FILE" | tr '\n' ' ')"
+  [ -n "$AGENT_NAMES" ] || die "no agents found in $PERSONAS_FILE"
+fi
 [ -n "$AGENT_NAMES" ] || AGENT_NAMES="$AGENT_NAMES_DEFAULT"
+
+# Per-protocol settings (the agent's internal port + which key env it reads)
+if [ "$PROTOCOL" = "a2a" ]; then
+  AGENT_PORT=9000
+  AGENT_KEY_ENV="A2A_KEY"
+  AGENT_COMMAND='["hermes-a2a"]'
+else
+  AGENT_PORT=8642
+  AGENT_KEY_ENV="API_SERVER_KEY"
+  AGENT_COMMAND='["gateway"]'
+fi
 
 # --- Config -----------------------------------------------------------------
 FLEET_ROOT="${FLEET_ROOT:-/srv/hermes-fleet}"
@@ -128,9 +173,28 @@ chmod 600 "$FLEET_ROOT/.env"
 ok "wrote $FLEET_ROOT/.env"
 
 # --- 7. Per-agent skeleton folders ------------------------------------------
+# When --personas-file is provided, also seed:
+#   - agents/<name>/persona.md with the personality blurb (you flesh out later)
+#   - agents/<name>/.persona-meta with display, role, skills (read by step 8)
 for name in $AGENT_NAMES; do
   AGENT_DIR="$FLEET_ROOT/agents/$name"
   mkdir -p "$AGENT_DIR"
+
+  # Pull richer metadata if --personas-file was given
+  display="$name"; role=""; skills=""; personality=""
+  if [ -n "$PERSONAS_FILE" ]; then
+    display="$(jq -r --arg n "$name" '.[] | select(.name==$n) | .display      // .name' "$PERSONAS_FILE")"
+    role="$(   jq -r --arg n "$name" '.[] | select(.name==$n) | .role         // ""'    "$PERSONAS_FILE")"
+    skills="$( jq -r --arg n "$name" '.[] | select(.name==$n) | (.skills // [] | join(","))' "$PERSONAS_FILE")"
+    personality="$(jq -r --arg n "$name" '.[] | select(.name==$n) | .personality // ""' "$PERSONAS_FILE")"
+    # Stash for step 8 to read without re-parsing
+    cat > "$AGENT_DIR/.persona-meta" <<EOF
+display=$display
+role=$role
+skills=$skills
+EOF
+  fi
+
   if [ ! -f "$AGENT_DIR/.env" ]; then
     cat > "$AGENT_DIR/.env" <<EOF
 # Provider key for agent "$name". Fill in via:
@@ -146,6 +210,23 @@ EOF
 #   ./fleet set $name --model <provider/model-id> --key <key>
 model:
   default: openrouter/minimax/minimax-m2
+EOF
+  fi
+  if [ -n "$personality" ] && [ ! -f "$AGENT_DIR/persona.md" ]; then
+    cat > "$AGENT_DIR/persona.md" <<EOF
+# $display
+
+Role: $role
+
+## Personality (one-line)
+
+$personality
+
+## Soul (TODO — flesh this out)
+
+Write the system prompt that gives this agent its voice, beliefs,
+quirks, and decision-making style. This file is for you; wire it
+into the agent's system_prompt config when ready.
 EOF
   fi
 done
@@ -215,20 +296,50 @@ sed -i.bak \
   "$COMPOSE"
 rm -f "$COMPOSE.bak"
 
-# Append one service block per agent
+# Append one service block per agent. Protocol-specific env keys plus
+# (optional) AGENT_DESCRIPTION / AGENT_SKILLS sourced from persona metadata.
 for name in $AGENT_NAMES; do
+  # Pull persona metadata stashed in step 7 (display, role, skills)
+  display="$name"; role=""; skills=""
+  if [ -f "$FLEET_ROOT/agents/$name/.persona-meta" ]; then
+    # shellcheck disable=SC1091
+    . "$FLEET_ROOT/agents/$name/.persona-meta"
+  fi
+  agent_desc=""
+  if [ -n "$role" ]; then
+    agent_desc="${display} — ${role}"
+  elif [ "$display" != "$name" ]; then
+    agent_desc="$display"
+  fi
+
+  if [ "$PROTOCOL" = "a2a" ]; then
+    proto_env="$(cat <<ENV
+      A2A_HOST: 0.0.0.0
+      A2A_PORT: $AGENT_PORT
+      A2A_KEY: \${BEARER_KEY}
+ENV
+    )"
+  else
+    proto_env="$(cat <<ENV
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: 0.0.0.0
+      API_SERVER_PORT: $AGENT_PORT
+      API_SERVER_KEY: \${BEARER_KEY}
+ENV
+    )"
+  fi
+
 cat >> "$COMPOSE" <<YAML
   hermes-agent-$name:
     <<: *agent-common
     container_name: hermes-agent-$name
-    command: ["gateway"]
+    command: $AGENT_COMMAND
     env_file: ./agents/$name/.env
     environment:
-      API_SERVER_ENABLED: "true"
-      API_SERVER_HOST: 0.0.0.0
-      API_SERVER_PORT: 8642
-      API_SERVER_KEY: \${BEARER_KEY}
+$proto_env
       AGENT_NAME: $name
+      AGENT_DESCRIPTION: "$agent_desc"
+      AGENT_SKILLS: "$skills"
     volumes:
       - ./workspaces:/workspaces
       - ./agents/$name:/root/.hermes
@@ -240,7 +351,7 @@ cat >> "$COMPOSE" <<YAML
       - traefik.http.routers.$name.tls.certresolver=le
       - traefik.http.routers.$name.middlewares=$name-strip
       - traefik.http.middlewares.$name-strip.stripprefix.prefixes=/agent-$name
-      - traefik.http.services.$name.loadbalancer.server.port=8642
+      - traefik.http.services.$name.loadbalancer.server.port=$AGENT_PORT
 
 YAML
 done
