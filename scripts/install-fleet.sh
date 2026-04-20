@@ -108,7 +108,7 @@ fi
 if [ "$PROTOCOL" = "a2a" ]; then
   AGENT_PORT=9000
   AGENT_KEY_ENV="A2A_KEY"
-  AGENT_COMMAND='["hermes-a2a"]'
+  AGENT_COMMAND='["a2a"]'
 else
   AGENT_PORT=8642
   AGENT_KEY_ENV="API_SERVER_KEY"
