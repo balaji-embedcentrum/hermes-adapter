@@ -73,7 +73,7 @@ done
 # --- Config -----------------------------------------------------------------
 FLEET_ROOT="${FLEET_ROOT:-/srv/hermes-fleet}"
 ADAPTER_IMAGE="${ADAPTER_IMAGE:-ghcr.io/balaji-embedcentrum/hermes-adapter:latest}"
-AGENT_IMAGE="${AGENT_IMAGE:-noushermes/hermes-agent:latest}"
+AGENT_IMAGE="${AGENT_IMAGE:-nousresearch/hermes-agent:latest}"
 TRAEFIK_IMAGE="${TRAEFIK_IMAGE:-traefik:v3.1}"
 
 # --- 1. Docker check --------------------------------------------------------
@@ -221,11 +221,12 @@ cat >> "$COMPOSE" <<YAML
   hermes-agent-$name:
     <<: *agent-common
     container_name: hermes-agent-$name
+    command: ["gateway"]
     env_file: ./agents/$name/.env
     environment:
       API_SERVER_ENABLED: "true"
       API_SERVER_HOST: 0.0.0.0
-      API_SERVER_PORT: 8765
+      API_SERVER_PORT: 8642
       API_SERVER_KEY: \${BEARER_KEY}
       AGENT_NAME: $name
     volumes:
@@ -239,7 +240,7 @@ cat >> "$COMPOSE" <<YAML
       - traefik.http.routers.$name.tls.certresolver=le
       - traefik.http.routers.$name.middlewares=$name-strip
       - traefik.http.middlewares.$name-strip.stripprefix.prefixes=/agent-$name
-      - traefik.http.services.$name.loadbalancer.server.port=8765
+      - traefik.http.services.$name.loadbalancer.server.port=8642
 
 YAML
 done
