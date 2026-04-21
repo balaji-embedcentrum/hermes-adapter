@@ -353,6 +353,19 @@ async def test_git_checkout_requires_branch(client, make_repo):
 # /ws/{repo}/git/fetch
 # ---------------------------------------------------------------------------
 
+async def test_git_events_headers(client, make_repo):
+    """Smoke test: endpoint exists, announces SSE correctly, closes cleanly."""
+    import asyncio as _asyncio
+    make_repo(name="demo", owner="alice")
+    resp = await client.get("/ws/demo/git/events")
+    assert resp.status == 200
+    assert resp.headers["Content-Type"].startswith("text/event-stream")
+    # Grab the initial ": connected\n\n" comment, then disconnect.
+    chunk = await _asyncio.wait_for(resp.content.readany(), timeout=2.0)
+    assert b":" in chunk  # any SSE comment or event line
+    resp.close()
+
+
 async def test_git_blob_head(client, make_repo):
     make_repo(name="demo", owner="alice")
     resp = await client.get("/ws/demo/git/blob", params={"path": "README.md"})

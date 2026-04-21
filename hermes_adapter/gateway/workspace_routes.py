@@ -8,12 +8,14 @@ are framework-agnostic and reused as-is.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import shutil as _shutil
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
 from ..workspace import proc, symbols_cache
 from ..workspace.repo_finder import find_repo, resolve_safe_path, workspace_root
@@ -639,6 +641,45 @@ async def handle_git_branch(request: Request) -> JSONResponse:
     if rc != 0:
         return _err(errout.strip(), 400)
     return JSONResponse({"status": "ok", "name": name, "from": from_ref or None})
+
+
+async def handle_git_events(request: Request) -> StreamingResponse:
+    """SSE stream emitting `git.status.changed` when porcelain output shifts.
+
+    See the aiohttp mirror in `workspace/routes/git.py` for the design.
+    """
+    ws, err = await _require_ws(request)
+    if err:
+        return err
+
+    async def gen():
+        yield b": connected\n\n"
+        last_hash: str | None = None
+        try:
+            while True:
+                if await request.is_disconnected():
+                    return
+                _, out, _ = await proc.run(
+                    ["git", "status", "--porcelain"], ws  # type: ignore[arg-type]
+                )
+                h = hashlib.sha1(out.encode()).hexdigest()
+                if h != last_hash:
+                    last_hash = h
+                    payload = json.dumps({"hash": h})
+                    yield f"event: git.status.changed\ndata: {payload}\n\n".encode()
+                await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            pass
+
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 async def handle_git_blob(request: Request) -> JSONResponse:
