@@ -67,6 +67,35 @@ async def test_git_status_clean(client, make_repo):
     assert body["changed"] == []
 
 
+async def test_git_status_staged_and_unstaged(client, make_repo):
+    """Status entries must expose both index (X) and worktree (Y) columns."""
+    import subprocess
+    repo = make_repo(name="demo", owner="alice")
+    # Staged-only: new file, added to index
+    (repo / "staged.md").write_text("s\n")
+    subprocess.run(["git", "add", "staged.md"], cwd=repo, check=True)
+    # Unstaged-only: modified existing file, not added
+    (repo / "README.md").write_text("# demo\nchanged\n")
+    # Untracked
+    (repo / "untracked.md").write_text("u\n")
+
+    body = await (await client.get("/ws/demo/git/status")).json()
+    assert body["status"] == "ok"
+    by_path = {e["path"]: e for e in body["changed"]}
+
+    # staged.md — X=A, Y=' '
+    assert by_path["staged.md"]["index"] == "A"
+    assert by_path["staged.md"]["worktree"] == " "
+
+    # README.md — X=' ', Y=M
+    assert by_path["README.md"]["index"] == " "
+    assert by_path["README.md"]["worktree"] == "M"
+
+    # untracked.md — both '?'
+    assert by_path["untracked.md"]["index"] == "?"
+    assert by_path["untracked.md"]["worktree"] == "?"
+
+
 async def test_git_commit_after_write(client, make_repo):
     make_repo(name="demo", owner="alice")
     await client.post("/ws/demo/file", json={"path": "new.md", "content": "x"})
