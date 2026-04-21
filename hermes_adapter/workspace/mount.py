@@ -40,6 +40,9 @@ def mount_routes(app: web.Application) -> None:
     r.add_post("/ws/{repo}/git/pr", git.handle_pr)
     r.add_get("/ws/{repo}/git/log", git.handle_log)
     r.add_get("/ws/{repo}/git/files", git.handle_files)
+    r.add_get("/ws/{repo}/git/diff", git.handle_diff)
+    r.add_get("/ws/{repo}/git/branches", git.handle_branches)
+    r.add_get("/ws/{repo}/git/show/{sha}", git.handle_show)
 
     r.add_get("/ws/{repo}/symbols", symbols.handle_get)
     r.add_post("/ws/{repo}/symbols/invalidate", symbols.handle_invalidate)
