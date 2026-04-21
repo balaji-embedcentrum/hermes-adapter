@@ -320,7 +320,12 @@ async def handle_git_commit(request: Request) -> JSONResponse:
     msg = (body.get("message") or "").strip()
     if not msg:
         return _err("commit message required")
-    await proc.run(["git", "add", "-A"], ws)  # type: ignore[arg-type]
+    # auto_stage defaults to True — preserves the long-standing behavior
+    # of `git add -A && git commit`. Set False to commit only what is
+    # already in the index (selective-staging UX).
+    auto_stage = body.get("auto_stage", True)
+    if auto_stage:
+        await proc.run(["git", "add", "-A"], ws)  # type: ignore[arg-type]
     rc, out, errout = await proc.run(["git", "commit", "-m", msg], ws)  # type: ignore[arg-type]
     if rc == 0:
         sha = ""
@@ -527,6 +532,117 @@ async def handle_git_show(request: Request) -> JSONResponse:
     )
 
     return JSONResponse({"status": "ok", "commit": commit, "files": files, "diff": diff_out})
+
+
+async def _read_paths(request: Request) -> tuple[list[str] | None, JSONResponse | None]:
+    try:
+        body = await request.json()
+    except Exception:
+        return None, _err("Invalid JSON")
+    paths = body.get("paths")
+    if not isinstance(paths, list) or not paths or not all(isinstance(p, str) and p for p in paths):
+        return None, _err("paths (non-empty list of strings) required")
+    return paths, None
+
+
+async def handle_git_stage(request: Request) -> JSONResponse:
+    ws, err = await _require_ws(request)
+    if err:
+        return err
+    paths, perr = await _read_paths(request)
+    if perr:
+        return perr
+    rc, _, errout = await proc.run(
+        ["git", "add", "--", *paths], ws  # type: ignore[arg-type,list-item]
+    )
+    if rc != 0:
+        return _err(errout.strip(), 400)
+    return JSONResponse({"status": "ok", "staged": paths})
+
+
+async def handle_git_unstage(request: Request) -> JSONResponse:
+    ws, err = await _require_ws(request)
+    if err:
+        return err
+    paths, perr = await _read_paths(request)
+    if perr:
+        return perr
+    rc, _, errout = await proc.run(
+        ["git", "reset", "HEAD", "--", *paths], ws  # type: ignore[arg-type,list-item]
+    )
+    if rc != 0:
+        return _err(errout.strip(), 400)
+    return JSONResponse({"status": "ok", "unstaged": paths})
+
+
+async def handle_git_discard(request: Request) -> JSONResponse:
+    ws, err = await _require_ws(request)
+    if err:
+        return err
+    paths, perr = await _read_paths(request)
+    if perr:
+        return perr
+    rc, _, errout = await proc.run(
+        ["git", "checkout", "--", *paths], ws  # type: ignore[arg-type,list-item]
+    )
+    if rc != 0:
+        return _err(errout.strip(), 400)
+    return JSONResponse({"status": "ok", "discarded": paths})
+
+
+async def handle_git_checkout(request: Request) -> JSONResponse:
+    ws, err = await _require_ws(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _err("Invalid JSON")
+    branch = (body.get("branch") or "").strip()
+    if not branch:
+        return _err("branch required")
+    create = bool(body.get("create", False))
+    args = ["git", "checkout"]
+    if create:
+        args.append("-b")
+    args.append(branch)
+    rc, _, errout = await proc.run(args, ws)  # type: ignore[arg-type]
+    if rc != 0:
+        return _err(errout.strip(), 400)
+    return JSONResponse({"status": "ok", "branch": branch, "created": create})
+
+
+async def handle_git_branch(request: Request) -> JSONResponse:
+    ws, err = await _require_ws(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return _err("Invalid JSON")
+    name = (body.get("name") or "").strip()
+    if not name:
+        return _err("name required")
+    from_ref = (body.get("from") or "").strip()
+    args = ["git", "branch", name]
+    if from_ref:
+        args.append(from_ref)
+    rc, _, errout = await proc.run(args, ws)  # type: ignore[arg-type]
+    if rc != 0:
+        return _err(errout.strip(), 400)
+    return JSONResponse({"status": "ok", "name": name, "from": from_ref or None})
+
+
+async def handle_git_fetch(request: Request) -> JSONResponse:
+    ws, err = await _require_ws(request)
+    if err:
+        return err
+    rc, out, errout = await proc.run(
+        ["git", "fetch", "--all", "--prune"], ws  # type: ignore[arg-type]
+    )
+    if rc != 0:
+        return _err(errout.strip(), 500)
+    return JSONResponse({"status": "ok", "output": (out or errout).strip()})
 
 
 # ---------------------------------------------------------------------------

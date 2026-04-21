@@ -83,6 +83,12 @@ def build_app(port: int | None = None) -> Starlette:
             Route("/ws/{repo}/git/diff", workspace_routes.handle_git_diff, methods=["GET"]),
             Route("/ws/{repo}/git/branches", workspace_routes.handle_git_branches, methods=["GET"]),
             Route("/ws/{repo}/git/show/{sha}", workspace_routes.handle_git_show, methods=["GET"]),
+            Route("/ws/{repo}/git/stage", workspace_routes.handle_git_stage, methods=["POST"]),
+            Route("/ws/{repo}/git/unstage", workspace_routes.handle_git_unstage, methods=["POST"]),
+            Route("/ws/{repo}/git/discard", workspace_routes.handle_git_discard, methods=["POST"]),
+            Route("/ws/{repo}/git/checkout", workspace_routes.handle_git_checkout, methods=["POST"]),
+            Route("/ws/{repo}/git/branch", workspace_routes.handle_git_branch, methods=["POST"]),
+            Route("/ws/{repo}/git/fetch", workspace_routes.handle_git_fetch, methods=["POST"]),
             Route("/ws/{repo}/symbols", workspace_routes.handle_symbols, methods=["GET"]),
             Route(
                 "/ws/{repo}/symbols/invalidate",

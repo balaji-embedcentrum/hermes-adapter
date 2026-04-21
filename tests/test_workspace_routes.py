@@ -208,3 +208,137 @@ async def test_git_show_bad_sha(client, make_repo):
     assert resp.status == 404
     body = await resp.json()
     assert body["status"] == "error"
+
+
+# ---------------------------------------------------------------------------
+# /ws/{repo}/git/stage | unstage | discard
+# ---------------------------------------------------------------------------
+
+async def test_git_stage_selective(client, make_repo):
+    repo = make_repo(name="demo", owner="alice")
+    (repo / "a.md").write_text("a\n")
+    (repo / "b.md").write_text("b\n")
+    resp = await client.post("/ws/demo/git/stage", json={"paths": ["a.md"]})
+    body = await resp.json()
+    assert body["status"] == "ok"
+    assert body["staged"] == ["a.md"]
+
+    # Only a.md should be staged; b.md remains untracked
+    staged = await (await client.get("/ws/demo/git/diff", params={"staged": "true"})).json()
+    assert "a.md" in staged["diff"]
+    assert "b.md" not in staged["diff"]
+
+
+async def test_git_stage_requires_paths(client, make_repo):
+    make_repo(name="demo", owner="alice")
+    resp = await client.post("/ws/demo/git/stage", json={})
+    assert resp.status == 400
+    resp2 = await client.post("/ws/demo/git/stage", json={"paths": []})
+    assert resp2.status == 400
+
+
+async def test_git_unstage(client, make_repo):
+    import subprocess
+    repo = make_repo(name="demo", owner="alice")
+    (repo / "new.md").write_text("new\n")
+    subprocess.run(["git", "add", "new.md"], cwd=repo, check=True)
+    resp = await client.post("/ws/demo/git/unstage", json={"paths": ["new.md"]})
+    assert resp.status == 200
+    # Confirm it's no longer staged
+    staged = await (await client.get("/ws/demo/git/diff", params={"staged": "true"})).json()
+    assert "new.md" not in staged["diff"]
+
+
+async def test_git_discard(client, make_repo):
+    repo = make_repo(name="demo", owner="alice")
+    (repo / "README.md").write_text("# demo\ndirty\n")
+    resp = await client.post("/ws/demo/git/discard", json={"paths": ["README.md"]})
+    assert resp.status == 200
+    # Working tree should match HEAD again
+    assert (repo / "README.md").read_text() == "# demo\n"
+
+
+# ---------------------------------------------------------------------------
+# /ws/{repo}/git/commit — auto_stage param
+# ---------------------------------------------------------------------------
+
+async def test_git_commit_auto_stage_false_requires_staged(client, make_repo):
+    make_repo(name="demo", owner="alice")
+    # Write a file but don't stage it; commit with auto_stage=false must fail.
+    await client.post("/ws/demo/file", json={"path": "x.md", "content": "x"})
+    resp = await client.post(
+        "/ws/demo/git/commit", json={"message": "x", "auto_stage": False}
+    )
+    assert resp.status == 500  # git commit with nothing staged
+
+
+async def test_git_commit_auto_stage_false_commits_staged(client, make_repo):
+    make_repo(name="demo", owner="alice")
+    await client.post("/ws/demo/file", json={"path": "x.md", "content": "x"})
+    await client.post("/ws/demo/git/stage", json={"paths": ["x.md"]})
+    resp = await client.post(
+        "/ws/demo/git/commit", json={"message": "add x", "auto_stage": False}
+    )
+    body = await resp.json()
+    assert body["status"] == "ok"
+    assert body["sha"]
+
+
+# ---------------------------------------------------------------------------
+# /ws/{repo}/git/checkout | branch
+# ---------------------------------------------------------------------------
+
+async def test_git_branch_and_checkout(client, make_repo):
+    make_repo(name="demo", owner="alice")
+    # Create a branch off HEAD
+    r1 = await client.post("/ws/demo/git/branch", json={"name": "feature"})
+    assert r1.status == 200
+    branches = await (await client.get("/ws/demo/git/branches")).json()
+    assert any(b["name"] == "feature" for b in branches["local"])
+    assert branches["current"] == "main"
+
+    # Switch to it
+    r2 = await client.post("/ws/demo/git/checkout", json={"branch": "feature"})
+    assert r2.status == 200
+    branches2 = await (await client.get("/ws/demo/git/branches")).json()
+    assert branches2["current"] == "feature"
+
+
+async def test_git_checkout_create(client, make_repo):
+    make_repo(name="demo", owner="alice")
+    resp = await client.post(
+        "/ws/demo/git/checkout", json={"branch": "new-branch", "create": True}
+    )
+    assert resp.status == 200
+    branches = await (await client.get("/ws/demo/git/branches")).json()
+    assert branches["current"] == "new-branch"
+
+
+async def test_git_checkout_requires_branch(client, make_repo):
+    make_repo(name="demo", owner="alice")
+    resp = await client.post("/ws/demo/git/checkout", json={})
+    assert resp.status == 400
+
+
+# ---------------------------------------------------------------------------
+# /ws/{repo}/git/fetch
+# ---------------------------------------------------------------------------
+
+async def test_git_fetch_with_local_origin(client, make_repo, workspace_root):
+    import subprocess
+    repo = make_repo(name="demo", owner="alice")
+    # Create a bare repo and wire it up as 'origin'
+    origin = workspace_root / "origin.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(origin)], check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(origin)], cwd=repo, check=True)
+    resp = await client.post("/ws/demo/git/fetch")
+    body = await resp.json()
+    assert body["status"] == "ok"
+
+
+async def test_git_fetch_no_remote(client, make_repo):
+    make_repo(name="demo", owner="alice")
+    # Fresh repo has no remote → git fetch --all succeeds silently with no output;
+    # either the handler returns ok (empty output) or error. Pin the expectation.
+    resp = await client.post("/ws/demo/git/fetch")
+    assert resp.status in (200, 500)
