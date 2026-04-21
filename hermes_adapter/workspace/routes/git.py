@@ -1,4 +1,4 @@
-"""Git operations over HTTP — status / commit / push / pull / pr / log / files / diff / branches / show."""
+"""Git operations over HTTP — full status/commit/diff/branch lifecycle."""
 
 from __future__ import annotations
 
@@ -58,7 +58,12 @@ async def handle_commit(request: web.Request) -> web.Response:
             {"status": "error", "message": "commit message required"}, status=400
         )
 
-    await proc.run(["git", "add", "-A"], workspace)  # type: ignore[arg-type]
+    # auto_stage defaults to True — preserves the long-standing behavior
+    # of `git add -A && git commit`. Set False to commit only what is
+    # already in the index (selective-staging UX).
+    auto_stage = body.get("auto_stage", True)
+    if auto_stage:
+        await proc.run(["git", "add", "-A"], workspace)  # type: ignore[arg-type]
     rc, out, errout = await proc.run(["git", "commit", "-m", message], workspace)  # type: ignore[arg-type]
     if rc == 0:
         sha = ""
@@ -302,3 +307,142 @@ async def handle_show(request: web.Request) -> web.Response:
     )
 
     return web.json_response({"status": "ok", "commit": commit, "files": files, "diff": diff_out})
+
+
+async def _read_paths(request: web.Request) -> tuple[list[str] | None, web.Response | None]:
+    try:
+        body = await request.json()
+    except Exception:
+        return None, web.json_response(
+            {"status": "error", "message": "Invalid JSON"}, status=400
+        )
+    paths = body.get("paths")
+    if not isinstance(paths, list) or not paths or not all(isinstance(p, str) and p for p in paths):
+        return None, web.json_response(
+            {"status": "error", "message": "paths (non-empty list of strings) required"},
+            status=400,
+        )
+    return paths, None
+
+
+async def handle_stage(request: web.Request) -> web.Response:
+    """Stage one or more paths. Body: ``{ paths: [str, ...] }``."""
+    workspace, err = await _require_workspace(request)
+    if err:
+        return err
+    paths, perr = await _read_paths(request)
+    if perr:
+        return perr
+    rc, _, errout = await proc.run(
+        ["git", "add", "--", *paths],  # type: ignore[list-item]
+        workspace,  # type: ignore[arg-type]
+    )
+    if rc != 0:
+        return web.json_response({"status": "error", "message": errout.strip()}, status=400)
+    return web.json_response({"status": "ok", "staged": paths})
+
+
+async def handle_unstage(request: web.Request) -> web.Response:
+    """Remove one or more paths from the index. Body: ``{ paths: [str, ...] }``."""
+    workspace, err = await _require_workspace(request)
+    if err:
+        return err
+    paths, perr = await _read_paths(request)
+    if perr:
+        return perr
+    # `reset HEAD --` works on repos with at least one commit; _require_workspace
+    # already rejects non-repos. On a repo with zero commits, git will error,
+    # which we surface.
+    rc, _, errout = await proc.run(
+        ["git", "reset", "HEAD", "--", *paths],  # type: ignore[list-item]
+        workspace,  # type: ignore[arg-type]
+    )
+    if rc != 0:
+        return web.json_response({"status": "error", "message": errout.strip()}, status=400)
+    return web.json_response({"status": "ok", "unstaged": paths})
+
+
+async def handle_discard(request: web.Request) -> web.Response:
+    """Discard unstaged working-tree changes for the given paths.
+
+    This does NOT remove untracked files (use a file DELETE for that) and does
+    NOT unstage already-staged changes (call ``/unstage`` first, then this).
+    """
+    workspace, err = await _require_workspace(request)
+    if err:
+        return err
+    paths, perr = await _read_paths(request)
+    if perr:
+        return perr
+    rc, _, errout = await proc.run(
+        ["git", "checkout", "--", *paths],  # type: ignore[list-item]
+        workspace,  # type: ignore[arg-type]
+    )
+    if rc != 0:
+        return web.json_response({"status": "error", "message": errout.strip()}, status=400)
+    return web.json_response({"status": "ok", "discarded": paths})
+
+
+async def handle_checkout(request: web.Request) -> web.Response:
+    """Switch branches. Body: ``{ branch: str, create?: bool }``.
+
+    When ``create`` is true, this is equivalent to ``git checkout -b <branch>``.
+    """
+    workspace, err = await _require_workspace(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+    branch = (body.get("branch") or "").strip()
+    if not branch:
+        return web.json_response(
+            {"status": "error", "message": "branch required"}, status=400
+        )
+    create = bool(body.get("create", False))
+    args = ["git", "checkout"]
+    if create:
+        args.append("-b")
+    args.append(branch)
+    rc, _, errout = await proc.run(args, workspace)  # type: ignore[arg-type]
+    if rc != 0:
+        return web.json_response({"status": "error", "message": errout.strip()}, status=400)
+    return web.json_response({"status": "ok", "branch": branch, "created": create})
+
+
+async def handle_branch(request: web.Request) -> web.Response:
+    """Create a new branch without switching to it. Body: ``{ name: str, from?: str }``."""
+    workspace, err = await _require_workspace(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+    name = (body.get("name") or "").strip()
+    if not name:
+        return web.json_response(
+            {"status": "error", "message": "name required"}, status=400
+        )
+    from_ref = (body.get("from") or "").strip()
+    args = ["git", "branch", name]
+    if from_ref:
+        args.append(from_ref)
+    rc, _, errout = await proc.run(args, workspace)  # type: ignore[arg-type]
+    if rc != 0:
+        return web.json_response({"status": "error", "message": errout.strip()}, status=400)
+    return web.json_response({"status": "ok", "name": name, "from": from_ref or None})
+
+
+async def handle_fetch(request: web.Request) -> web.Response:
+    """Fetch all remotes with pruning. Runs ``git fetch --all --prune``."""
+    workspace, err = await _require_workspace(request)
+    if err:
+        return err
+    rc, out, errout = await proc.run(
+        ["git", "fetch", "--all", "--prune"], workspace  # type: ignore[arg-type]
+    )
+    if rc != 0:
+        return web.json_response({"status": "error", "message": errout.strip()}, status=500)
+    return web.json_response({"status": "ok", "output": (out or errout).strip()})
