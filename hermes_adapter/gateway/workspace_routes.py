@@ -297,8 +297,16 @@ async def handle_git_status(request: Request) -> JSONResponse:
     changed = []
     for line in out.splitlines():
         if len(line) >= 3:
-            code = line[:2].strip()
-            changed.append({"path": line[3:], "status": code[0] if code else "?"})
+            # Porcelain v1 format is "XY path". Keep both columns so the UI
+            # can tell staged (X) from unstaged (Y) changes.
+            index = line[0]
+            worktree = line[1]
+            changed.append({
+                "path": line[3:],
+                "index": index,
+                "worktree": worktree,
+                "status": worktree if worktree != " " else index,
+            })
     rc, rev, _ = await proc.run(
         ["git", "rev-list", "--count", "--left-right", "@{u}...HEAD"], ws  # type: ignore[arg-type]
     )

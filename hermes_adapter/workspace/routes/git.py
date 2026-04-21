@@ -27,9 +27,21 @@ async def handle_status(request: web.Request) -> web.Response:
     changed = []
     for line in out.splitlines():
         if len(line) >= 3:
-            code = line[:2].strip()
+            # Porcelain v1 format is "XY path" where X = index/staged status
+            # and Y = worktree/unstaged status (each a single char, possibly
+            # space). Keep both so the UI can segregate staged from unstaged.
+            index = line[0]
+            worktree = line[1]
             path = line[3:]
-            changed.append({"path": path, "status": code[0] if code else "?"})
+            changed.append({
+                "path": path,
+                "index": index,
+                "worktree": worktree,
+                # Convenience: a single "most interesting" letter for callers
+                # that don't care about the split (worktree takes precedence,
+                # since that's typically what the user sees first).
+                "status": worktree if worktree != " " else index,
+            })
 
     rc2, rev, _ = await proc.run(
         ["git", "rev-list", "--count", "--left-right", "@{u}...HEAD"], workspace  # type: ignore[arg-type]
