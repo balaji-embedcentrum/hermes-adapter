@@ -641,6 +641,27 @@ async def handle_git_branch(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok", "name": name, "from": from_ref or None})
 
 
+async def handle_git_blob(request: Request) -> JSONResponse:
+    ws, err = await _require_ws(request)
+    if err:
+        return err
+    q = request.query_params
+    path = (q.get("path") or "").strip()
+    ref = (q.get("ref") or "HEAD").strip() or "HEAD"
+    if not path:
+        return _err("path required", 400)
+    rc, out, errout = await proc.run(
+        ["git", "show", f"{ref}:{path}"], ws  # type: ignore[arg-type]
+    )
+    if rc != 0:
+        if "does not exist" in errout or "exists on disk, but not in" in errout:
+            return JSONResponse(
+                {"status": "ok", "path": path, "ref": ref, "content": ""}
+            )
+        return _err(errout.strip(), 404)
+    return JSONResponse({"status": "ok", "path": path, "ref": ref, "content": out})
+
+
 async def handle_git_fetch(request: Request) -> JSONResponse:
     ws, err = await _require_ws(request)
     if err:

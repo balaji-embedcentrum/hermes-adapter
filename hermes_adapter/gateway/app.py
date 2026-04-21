@@ -89,6 +89,7 @@ def build_app(port: int | None = None) -> Starlette:
             Route("/ws/{repo}/git/checkout", workspace_routes.handle_git_checkout, methods=["POST"]),
             Route("/ws/{repo}/git/branch", workspace_routes.handle_git_branch, methods=["POST"]),
             Route("/ws/{repo}/git/fetch", workspace_routes.handle_git_fetch, methods=["POST"]),
+            Route("/ws/{repo}/git/blob", workspace_routes.handle_git_blob, methods=["GET"]),
             Route("/ws/{repo}/symbols", workspace_routes.handle_symbols, methods=["GET"]),
             Route(
                 "/ws/{repo}/symbols/invalidate",

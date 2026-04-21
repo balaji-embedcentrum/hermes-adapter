@@ -447,6 +447,36 @@ async def handle_branch(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok", "name": name, "from": from_ref or None})
 
 
+async def handle_blob(request: web.Request) -> web.Response:
+    """Return file content at a specific ref. Query: ``path=<rel>&ref=<ref>``.
+
+    Used by the Studio diff view to fetch the HEAD (or any ref's) version of
+    a file for side-by-side comparison against the working tree.
+    """
+    workspace, err = await _require_workspace(request)
+    if err:
+        return err
+    q = request.rel_url.query
+    path = q.get("path", "").strip()
+    ref = q.get("ref", "HEAD").strip() or "HEAD"
+    if not path:
+        return web.json_response(
+            {"status": "error", "message": "path required"}, status=400
+        )
+    rc, out, errout = await proc.run(
+        ["git", "show", f"{ref}:{path}"], workspace  # type: ignore[arg-type]
+    )
+    if rc != 0:
+        # Common case: file didn't exist at that ref (new file in working tree).
+        # Return empty content with 200 so the diff view can show "all additions".
+        if "does not exist" in errout or "exists on disk, but not in" in errout:
+            return web.json_response({"status": "ok", "path": path, "ref": ref, "content": ""})
+        return web.json_response(
+            {"status": "error", "message": errout.strip()}, status=404
+        )
+    return web.json_response({"status": "ok", "path": path, "ref": ref, "content": out})
+
+
 async def handle_fetch(request: web.Request) -> web.Response:
     """Fetch all remotes with pruning. Runs ``git fetch --all --prune``."""
     workspace, err = await _require_workspace(request)

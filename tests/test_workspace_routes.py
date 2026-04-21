@@ -353,6 +353,30 @@ async def test_git_checkout_requires_branch(client, make_repo):
 # /ws/{repo}/git/fetch
 # ---------------------------------------------------------------------------
 
+async def test_git_blob_head(client, make_repo):
+    make_repo(name="demo", owner="alice")
+    resp = await client.get("/ws/demo/git/blob", params={"path": "README.md"})
+    body = await resp.json()
+    assert body["status"] == "ok"
+    assert body["content"] == "# demo\n"
+    assert body["ref"] == "HEAD"
+
+
+async def test_git_blob_nonexistent_path(client, make_repo):
+    make_repo(name="demo", owner="alice")
+    # File exists in working tree only, not in HEAD → empty content, 200.
+    resp = await client.get("/ws/demo/git/blob", params={"path": "not-in-head.md"})
+    body = await resp.json()
+    assert resp.status == 200
+    assert body["content"] == ""
+
+
+async def test_git_blob_requires_path(client, make_repo):
+    make_repo(name="demo", owner="alice")
+    resp = await client.get("/ws/demo/git/blob")
+    assert resp.status == 400
+
+
 async def test_git_fetch_with_local_origin(client, make_repo, workspace_root):
     import subprocess
     repo = make_repo(name="demo", owner="alice")
