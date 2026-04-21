@@ -80,6 +80,9 @@ def build_app(port: int | None = None) -> Starlette:
             Route("/ws/{repo}/git/pr", workspace_routes.handle_git_pr, methods=["POST"]),
             Route("/ws/{repo}/git/log", workspace_routes.handle_git_log, methods=["GET"]),
             Route("/ws/{repo}/git/files", workspace_routes.handle_git_files, methods=["GET"]),
+            Route("/ws/{repo}/git/diff", workspace_routes.handle_git_diff, methods=["GET"]),
+            Route("/ws/{repo}/git/branches", workspace_routes.handle_git_branches, methods=["GET"]),
+            Route("/ws/{repo}/git/show/{sha}", workspace_routes.handle_git_show, methods=["GET"]),
             Route("/ws/{repo}/symbols", workspace_routes.handle_symbols, methods=["GET"]),
             Route(
                 "/ws/{repo}/symbols/invalidate",

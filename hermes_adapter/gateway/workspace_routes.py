@@ -421,6 +421,114 @@ async def handle_git_files(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok", "files": files})
 
 
+async def handle_git_diff(request: Request) -> JSONResponse:
+    ws, err = await _require_ws(request)
+    if err:
+        return err
+    q = request.query_params
+    path = (q.get("path") or "").strip()
+    staged = (q.get("staged") or "").lower() == "true"
+    ref = (q.get("ref") or "").strip()
+
+    if ref:
+        args = ["git", "show", "--format=", ref]
+    else:
+        args = ["git", "diff"]
+        if staged:
+            args.append("--cached")
+    if path:
+        args.extend(["--", path])
+
+    rc, out, errout = await proc.run(args, ws)  # type: ignore[arg-type]
+    if rc != 0:
+        return _err(errout.strip(), 400)
+    return JSONResponse({"status": "ok", "diff": out})
+
+
+async def handle_git_branches(request: Request) -> JSONResponse:
+    ws, err = await _require_ws(request)
+    if err:
+        return err
+
+    rc_cur, cur_out, _ = await proc.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"], ws  # type: ignore[arg-type]
+    )
+    current: str | None = cur_out.strip() if rc_cur == 0 else None
+    if current == "HEAD":
+        current = None
+
+    _, sha_out, _ = await proc.run(
+        ["git", "rev-parse", "--short", "HEAD"], ws  # type: ignore[arg-type]
+    )
+    head_sha = sha_out.strip()
+
+    SEP = "\x1f"
+    fmt = f"%(refname:short){SEP}%(objectname:short){SEP}%(upstream:short)"
+    _, local_out, _ = await proc.run(
+        ["git", "for-each-ref", f"--format={fmt}", "refs/heads"], ws  # type: ignore[arg-type]
+    )
+    local: list[dict] = []
+    for line in local_out.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split(SEP)
+        entry: dict = {"name": parts[0], "sha": parts[1] if len(parts) > 1 else ""}
+        if len(parts) > 2 and parts[2]:
+            entry["upstream"] = parts[2]
+        local.append(entry)
+
+    _, remote_out, _ = await proc.run(
+        ["git", "for-each-ref", "--format=%(refname:short)", "refs/remotes"], ws  # type: ignore[arg-type]
+    )
+    remote = [line.strip() for line in remote_out.splitlines()
+              if line.strip() and not line.strip().endswith("/HEAD")]
+
+    return JSONResponse(
+        {"status": "ok", "current": current, "head_sha": head_sha, "local": local, "remote": remote}
+    )
+
+
+async def handle_git_show(request: Request) -> JSONResponse:
+    ws, err = await _require_ws(request)
+    if err:
+        return err
+    sha = request.path_params["sha"]
+
+    SEP = "\x1f"
+    fmt = f"%H{SEP}%h{SEP}%an{SEP}%ae{SEP}%aI{SEP}%s{SEP}%P"
+    rc, meta_out, errout = await proc.run(
+        ["git", "log", "-1", f"--format={fmt}", sha], ws  # type: ignore[arg-type]
+    )
+    if rc != 0 or not meta_out.strip():
+        return _err(errout.strip() or f"unknown ref: {sha}", 404)
+    parts = meta_out.strip().split(SEP, 6)
+    commit = {
+        "hash": parts[0],
+        "shortHash": parts[1],
+        "author": parts[2],
+        "email": parts[3],
+        "date": parts[4],
+        "message": parts[5],
+        "parents": parts[6].split() if len(parts) > 6 and parts[6] else [],
+    }
+
+    _, files_out, _ = await proc.run(
+        ["git", "diff-tree", "--no-commit-id", "--root", "-r", "--name-status", sha], ws  # type: ignore[arg-type]
+    )
+    status_map = {"A": "added", "M": "modified", "D": "deleted", "R": "renamed"}
+    files: list[dict] = []
+    for line in files_out.strip().splitlines():
+        fparts = line.split("\t", 2)
+        if len(fparts) >= 2:
+            files.append({"status": status_map.get(fparts[0][0], fparts[0]), "path": fparts[-1]})
+
+    _, diff_out, _ = await proc.run(
+        ["git", "show", "--format=", sha], ws  # type: ignore[arg-type]
+    )
+
+    return JSONResponse({"status": "ok", "commit": commit, "files": files, "diff": diff_out})
+
+
 # ---------------------------------------------------------------------------
 # /ws/{repo}/symbols
 # ---------------------------------------------------------------------------
