@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
+
 from aiohttp import web
 
 from .. import proc
@@ -445,6 +449,57 @@ async def handle_branch(request: web.Request) -> web.Response:
     if rc != 0:
         return web.json_response({"status": "error", "message": errout.strip()}, status=400)
     return web.json_response({"status": "ok", "name": name, "from": from_ref or None})
+
+
+async def handle_events(request: web.Request) -> web.StreamResponse:
+    """Server-Sent Events stream: emits `git.status.changed` on repo change.
+
+    Implementation: the handler polls `git status --porcelain` once per second
+    and pushes an event every time the output hash shifts. Clients can reuse
+    this to replace client-side polling — same latency, single connection.
+
+    No filesystem watcher (watchdog) — polling the index is lightweight
+    (git itself caches stat info) and avoids an extra runtime dep. Connection
+    closes cleanly on client disconnect via asyncio cancellation.
+    """
+    workspace, err = await _require_workspace(request)
+    if err:
+        return err
+
+    resp = web.StreamResponse(
+        status=200,
+        headers={
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            # CORS handled by the global cors_middleware; this just unblocks
+            # EventSource for direct same-origin-or-allowed-origin calls.
+            "Connection": "keep-alive",
+        },
+    )
+    await resp.prepare(request)
+
+    last_hash: str | None = None
+    try:
+        # Emit an immediate "connected" comment so the browser sees bytes
+        # before waiting for the first real change.
+        await resp.write(b": connected\n\n")
+        while True:
+            _, out, _ = await proc.run(
+                ["git", "status", "--porcelain"], workspace  # type: ignore[arg-type]
+            )
+            h = hashlib.sha1(out.encode()).hexdigest()
+            if h != last_hash:
+                last_hash = h
+                payload = json.dumps({"hash": h})
+                await resp.write(
+                    f"event: git.status.changed\ndata: {payload}\n\n".encode()
+                )
+            await asyncio.sleep(1.0)
+    except (asyncio.CancelledError, ConnectionResetError):
+        # Client closed — nothing to do, let the response tear down naturally.
+        pass
+    return resp
 
 
 async def handle_blob(request: web.Request) -> web.Response:
