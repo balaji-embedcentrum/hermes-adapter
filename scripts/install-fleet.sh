@@ -2,16 +2,16 @@
 # ---------------------------------------------------------------------------
 # hermes-adapter — agent fleet installer (one-shot)
 #
-# Sets up an agent fleet on a fresh VPS, in either of two flavours:
-#   --protocol openai  (default) — for Hermes Studio
-#         hermes-agent serves the OpenAI-compatible API on /v1/*
-#   --protocol a2a                — for Akela (or any A2A orchestrator)
-#         hermes-agent serves the Agent-to-Agent JSON-RPC protocol at root
+# Every agent in the fleet runs the unified gateway
+# (hermes_adapter.gateway) which exposes three protocols on one port:
+#   /v1/chat/completions, /v1/models      OpenAI-compatible  (Studio, Akela fallback)
+#   /.well-known/agent.json, POST /        A2A JSON-RPC       (Akela, Vertex, LangGraph)
+#   /ws/*                                 Workspace file+git (Studio IDE)
 #
-# Both flavours bring up:
+# The fleet brings up:
 #   - 1× Traefik    (TLS via Let's Encrypt)
-#   - 1× adapter    (workspace API only — /ws/* paths, shared)
-#   - N× hermes-agent containers (one per persona)
+#   - 1× adapter    (/fleet/claim control plane + shared /ws/* for claim flow)
+#   - N× agents     (one per persona, each running the unified gateway)
 #
 # After install, you fill in each agent's model + key with the generated
 # `./fleet` helper, then `./fleet up` starts the agent containers.
@@ -39,10 +39,10 @@
 #                    agent VPS (DNS A record must already point here).
 #   --acme-email     REQUIRED for fresh install. Let's Encrypt renewal
 #                    contact email.
-#   --protocol       OPTIONAL. openai | a2a (default: openai).
-#   --studio-url     OPTIONAL. CORS origin for Studio (default: omit; only
-#                    needed for openai-protocol fleets that browser-call
-#                    the adapter directly).
+#   --protocol       DEPRECATED. Accepted for backward compatibility but
+#                    ignored — every agent now serves OpenAI + A2A + workspace
+#                    simultaneously.
+#   --studio-url     OPTIONAL. CORS origin for Studio.
 #   --names          OPTIONAL. Space-separated agent names. Mutually
 #                    exclusive with --personas-file.
 #                    (default: "emma mateo aarav mei lea sofia yuki priya lukas diego")
@@ -50,14 +50,14 @@
 #                    objects: [{name, display, role, skills[], personality},
 #                    ...]. When present, populates AGENT_NAME /
 #                    AGENT_DESCRIPTION / AGENT_SKILLS env so each agent's
-#                    /.well-known/agent.json (a2a) or model card (openai)
-#                    is rendered correctly. Also seeds agents/<name>/persona.md
+#                    /.well-known/agent.json + /v1/models card render correctly.
+#                    Also seeds agents/<name>/persona.md
 #                    with the personality blurb for you to flesh out.
 #
 # Env overrides:
 #   FLEET_ROOT       install root           (default: /srv/hermes-fleet)
-#   ADAPTER_IMAGE    workspace API image
-#   AGENT_IMAGE      hermes-agent image
+#   ADAPTER_IMAGE    hermes-adapter image   (used for both fleet control
+#                    plane AND per-agent containers)
 #   TRAEFIK_IMAGE    traefik image
 # ---------------------------------------------------------------------------
 
@@ -414,12 +414,12 @@ fi
 
 [ -n "$DOMAIN" ]     || die "missing required --domain"
 [ -n "$ACME_EMAIL" ] || die "missing required --acme-email"
-[[ "$PROTOCOL" == "openai" || "$PROTOCOL" == "a2a" ]] \
-  || die "--protocol must be 'openai' or 'a2a' (got: $PROTOCOL)"
 [ -z "$PERSONAS_FILE" ] || [ -z "$AGENT_NAMES" ] \
   || die "--personas-file and --names are mutually exclusive"
 [ -z "$PERSONAS_FILE" ] || [ -f "$PERSONAS_FILE" ] \
   || die "--personas-file not found: $PERSONAS_FILE"
+[ "$PROTOCOL" = "openai" ] || [ "$PROTOCOL" = "a2a" ] || \
+  warn "--protocol is deprecated and ignored; every agent now serves both"
 
 # When --personas-file is given, jq is required to parse it
 if [ -n "$PERSONAS_FILE" ]; then
@@ -430,21 +430,12 @@ if [ -n "$PERSONAS_FILE" ]; then
 fi
 [ -n "$AGENT_NAMES" ] || AGENT_NAMES="$AGENT_NAMES_DEFAULT"
 
-# Per-protocol settings (the agent's internal port + which key env it reads)
-if [ "$PROTOCOL" = "a2a" ]; then
-  AGENT_PORT=9000
-  AGENT_KEY_ENV="A2A_KEY"
-  AGENT_COMMAND='["a2a"]'
-else
-  AGENT_PORT=8642
-  AGENT_KEY_ENV="API_SERVER_KEY"
-  AGENT_COMMAND='["gateway"]'
-fi
+# Unified gateway: one port per agent, serves OpenAI + A2A + workspace.
+AGENT_PORT=9001
 
 # --- Config -----------------------------------------------------------------
 FLEET_ROOT="${FLEET_ROOT:-/srv/hermes-fleet}"
 ADAPTER_IMAGE="${ADAPTER_IMAGE:-ghcr.io/balaji-embedcentrum/hermes-adapter:latest}"
-AGENT_IMAGE="${AGENT_IMAGE:-nousresearch/hermes-agent:latest}"
 # Traefik v3.3+ required. Older v3.1 ships with a Docker SDK client that
 # defaults to API version 1.24, which modern Docker Engine (25+) rejects
 # with "client version 1.24 is too old. Minimum supported API version is
@@ -492,7 +483,6 @@ else
   say "pulling $ADAPTER_IMAGE from registry"
   docker pull "$ADAPTER_IMAGE"
 fi
-docker pull "$AGENT_IMAGE"
 docker pull "$TRAEFIK_IMAGE"
 
 # --- 5. Generate the shared bearer key --------------------------------------
@@ -595,7 +585,7 @@ cat > "$COMPOSE" <<'YAML'
 name: hermes-fleet
 
 x-agent-common: &agent-common
-  image: AGENT_IMAGE_PLACEHOLDER
+  image: ADAPTER_IMAGE_PLACEHOLDER
   restart: unless-stopped
   networks: [fleet]
 
@@ -681,7 +671,6 @@ YAML
 
 # substitute the image placeholders
 sed -i.bak \
-  -e "s|AGENT_IMAGE_PLACEHOLDER|$AGENT_IMAGE|g" \
   -e "s|ADAPTER_IMAGE_PLACEHOLDER|$ADAPTER_IMAGE|g" \
   -e "s|TRAEFIK_IMAGE_PLACEHOLDER|$TRAEFIK_IMAGE|g" \
   "$COMPOSE"
@@ -703,31 +692,21 @@ for name in $AGENT_NAMES; do
     agent_desc="$display"
   fi
 
-  if [ "$PROTOCOL" = "a2a" ]; then
-    proto_env="$(cat <<ENV
-      A2A_HOST: 0.0.0.0
-      A2A_PORT: $AGENT_PORT
-      A2A_KEY: \${BEARER_KEY}
-ENV
-    )"
-  else
-    proto_env="$(cat <<ENV
-      API_SERVER_ENABLED: "true"
-      API_SERVER_HOST: 0.0.0.0
-      API_SERVER_PORT: $AGENT_PORT
-      API_SERVER_KEY: \${BEARER_KEY}
-ENV
-    )"
-  fi
-
 cat >> "$COMPOSE" <<YAML
   hermes-agent-$name:
     <<: *agent-common
     container_name: hermes-agent-$name
-    command: $AGENT_COMMAND
+    command: ["gateway"]
     env_file: ./agents/$name/.env
     environment:
-$proto_env
+      # Unified gateway binds one port; A2A_* env vars are reused by
+      # the gateway's Starlette app for both the A2A and OpenAI routes.
+      A2A_HOST: 0.0.0.0
+      A2A_PORT: $AGENT_PORT
+      A2A_KEY: \${BEARER_KEY}
+      A2A_PUBLIC_URL: https://\${DOMAIN}/agent-$name
+      # OpenAI-compat handler reads the same bearer.
+      API_SERVER_KEY: \${BEARER_KEY}
       AGENT_NAME: $name
       AGENT_DESCRIPTION: "$agent_desc"
       AGENT_SKILLS: "$skills"
