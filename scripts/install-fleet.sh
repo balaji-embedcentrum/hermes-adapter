@@ -445,7 +445,11 @@ fi
 FLEET_ROOT="${FLEET_ROOT:-/srv/hermes-fleet}"
 ADAPTER_IMAGE="${ADAPTER_IMAGE:-ghcr.io/balaji-embedcentrum/hermes-adapter:latest}"
 AGENT_IMAGE="${AGENT_IMAGE:-nousresearch/hermes-agent:latest}"
-TRAEFIK_IMAGE="${TRAEFIK_IMAGE:-traefik:v3.1}"
+# Traefik v3.3+ required. Older v3.1 ships with a Docker SDK client that
+# defaults to API version 1.24, which modern Docker Engine (25+) rejects
+# with "client version 1.24 is too old. Minimum supported API version is
+# 1.40". v3.3's SDK negotiates correctly.
+TRAEFIK_IMAGE="${TRAEFIK_IMAGE:-traefik:v3.3}"
 
 # --- 1. Docker sanity (bootstrap already ensured docker is present) --------
 say "using $(docker --version)"
