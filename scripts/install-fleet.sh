@@ -449,7 +449,7 @@ AGENT_IMAGE="${AGENT_IMAGE:-nousresearch/hermes-agent:latest}"
 # defaults to API version 1.24, which modern Docker Engine (25+) rejects
 # with "client version 1.24 is too old. Minimum supported API version is
 # 1.40". v3.3's SDK negotiates correctly.
-TRAEFIK_IMAGE="${TRAEFIK_IMAGE:-traefik:v3.3}"
+TRAEFIK_IMAGE="${TRAEFIK_IMAGE:-traefik:latest}"
 
 # --- 1. Docker sanity (bootstrap already ensured docker is present) --------
 say "using $(docker --version)"
