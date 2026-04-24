@@ -163,14 +163,26 @@ else
 fi
 
 # --- 6. Stack-level .env ----------------------------------------------------
+# FLEET_HOST_ROOT is the host-absolute path bind-mounted into the adapter
+# container at /srv/hermes-fleet. The adapter needs this to find
+# docker-compose.yml + write compose overrides when /fleet/claim runs.
 cat > "$FLEET_ROOT/.env" <<EOF
 DOMAIN=$DOMAIN
 STUDIO_URL=$STUDIO_URL
 BEARER_KEY=$BEARER_KEY
 ACME_EMAIL=$ACME_EMAIL
+FLEET_HOST_ROOT=$FLEET_ROOT
 EOF
 chmod 600 "$FLEET_ROOT/.env"
 ok "wrote $FLEET_ROOT/.env"
+
+# Create the sentinel "unclaimed" workspace — an empty directory that
+# agent containers mount as /opt/workspaces when no user has claimed
+# them. Keeps the container's view empty instead of exposing siblings.
+mkdir -p "$FLEET_ROOT/workspaces/_unclaimed"
+chmod 755 "$FLEET_ROOT/workspaces/_unclaimed"
+mkdir -p "$FLEET_ROOT/compose.override"
+ok "fleet sentinel + override dir ready"
 
 # --- 7. Per-agent skeleton folders ------------------------------------------
 # When --personas-file is provided, also seed:
@@ -274,11 +286,25 @@ services:
       HERMES_ADAPTER_PORT: 8766
       HERMES_WORKSPACE_DIR: /workspaces
       HERMES_ADAPTER_CORS_ORIGINS: ${STUDIO_URL}
+      # Fleet control plane — enables /fleet/claim, /fleet/unclaim,
+      # /fleet/status. FLEET_ROOT must point at the host path mounted
+      # below so adapter can read docker-compose.yml + write overrides.
+      HERMES_FLEET_MODE: "1"
+      FLEET_ROOT: /srv/hermes-fleet
+      FLEET_CONTROL_KEY: ${BEARER_KEY}
     volumes:
       - ./workspaces:/workspaces
+      # Fleet control needs the host's compose file + override dir,
+      # plus the docker socket to run `docker compose up -d` against
+      # agent containers. This is a privileged mount — treat adapter
+      # as security-critical.
+      - ${FLEET_HOST_ROOT}:/srv/hermes-fleet
+      - /var/run/docker.sock:/var/run/docker.sock
     networks: [fleet]
     labels:
       - traefik.enable=true
+      # /agent-<name>/ws/* — per-agent workspace proxy (read/write files,
+      # git ops). Adapter receives stripped path.
       - traefik.http.routers.ws.rule=Host(`${DOMAIN}`) && PathRegexp(`^/agent-[a-z]+/ws`)
       - traefik.http.routers.ws.entrypoints=websecure
       - traefik.http.routers.ws.tls.certresolver=le
@@ -286,6 +312,12 @@ services:
       - traefik.http.middlewares.ws-strip.replacepathregex.regex=^/agent-[a-z]+(/ws.*)$$
       - traefik.http.middlewares.ws-strip.replacepathregex.replacement=$$1
       - traefik.http.services.ws.loadbalancer.server.port=8766
+      # /fleet/* — root-level control plane (claim/unclaim/status).
+      # Bearer-auth'd in the handler; see hermes_adapter.fleet.routes.
+      - traefik.http.routers.fleet.rule=Host(`${DOMAIN}`) && PathPrefix(`/fleet`)
+      - traefik.http.routers.fleet.entrypoints=websecure
+      - traefik.http.routers.fleet.tls.certresolver=le
+      - traefik.http.services.fleet.loadbalancer.server.port=8766
 
 YAML
 
@@ -341,8 +373,17 @@ $proto_env
       AGENT_NAME: $name
       AGENT_DESCRIPTION: "$agent_desc"
       AGENT_SKILLS: "$skills"
+      # Bind-mount pattern: each agent sees exactly one user's workspace
+      # at /opt/workspaces after /fleet/claim writes its override.
+      # Kernel-enforced isolation, no symlink tricks required.
+      HERMES_WORKSPACE_DIR: /opt/workspaces
     volumes:
-      - ./workspaces:/workspaces
+      # Default mount: the sentinel "unclaimed" dir — empty and
+      # read-only. /fleet/claim writes a per-agent override at
+      # $FLEET_ROOT/compose.override/$name.yml that replaces this
+      # with ./workspaces/<user>:/opt/workspaces for the chosen user.
+      # Unclaimed agents never see any user's files.
+      - ./workspaces/_unclaimed:/opt/workspaces:ro
       - ./agents/$name:/root/.hermes
     profiles: ["agents"]
     labels:
@@ -456,10 +497,25 @@ cmd_bootstrap() {
   done
 }
 
-cmd_up()     { docker compose --profile agents up -d; docker compose ps; }
-cmd_down()   { docker compose --profile agents stop; }
-cmd_status() { docker compose ps; }
-cmd_logs()   { docker compose logs -f "hermes-agent-$1"; }
+# compose_flags — assemble -f flags for the base compose file + every
+# per-agent override the adapter has written via /fleet/claim. Must be
+# passed to every docker compose invocation so the current bind mounts
+# are preserved. Without this, `./fleet up` would silently revert
+# claims back to the sentinel mount.
+compose_flags() {
+  local flags=("-f" "docker-compose.yml")
+  if [ -d compose.override ]; then
+    for o in compose.override/*.yml; do
+      [ -f "$o" ] && flags+=("-f" "$o")
+    done
+  fi
+  printf '%s\n' "${flags[@]}"
+}
+
+cmd_up()     { mapfile -t f < <(compose_flags); docker compose "${f[@]}" --profile agents up -d; docker compose "${f[@]}" ps; }
+cmd_down()   { mapfile -t f < <(compose_flags); docker compose "${f[@]}" --profile agents stop; }
+cmd_status() { mapfile -t f < <(compose_flags); docker compose "${f[@]}" ps; }
+cmd_logs()   { mapfile -t f < <(compose_flags); docker compose "${f[@]}" logs -f "hermes-agent-$1"; }
 cmd_list() {
   printf "%-12s %-8s %s\n" "AGENT" "KEYED" "MODEL"
   for d in agents/*/; do
