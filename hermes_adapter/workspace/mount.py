@@ -13,13 +13,23 @@ workspace API mounted inline:
 
 from __future__ import annotations
 
+import os
+
 from aiohttp import web
 
+from ..fleet import routes as fleet_routes
 from .routes import activate, file, git, init, listing, symbols, tree
 
 
 def mount_routes(app: web.Application) -> None:
-    """Register every ``/ws/*`` route onto *app*'s router."""
+    """Register every ``/ws/*`` route onto *app*'s router.
+
+    When the adapter is running in multi-tenant fleet mode
+    (``HERMES_FLEET_MODE=1`` or ``FLEET_ROOT`` set), also register the
+    ``/fleet/*`` control plane that orchestrates per-session bind mounts
+    via ``docker compose``. Single-user installs leave those env vars
+    unset and only get the workspace API.
+    """
     r = app.router
 
     r.add_get("/ws", listing.handle_list)
@@ -46,3 +56,9 @@ def mount_routes(app: web.Application) -> None:
 
     r.add_get("/ws/{repo}/symbols", symbols.handle_get)
     r.add_post("/ws/{repo}/symbols/invalidate", symbols.handle_invalidate)
+
+    # Fleet control plane — opt-in via env.
+    if os.environ.get("HERMES_FLEET_MODE") or os.environ.get("FLEET_ROOT"):
+        r.add_post("/fleet/claim", fleet_routes.handle_claim)
+        r.add_post("/fleet/unclaim", fleet_routes.handle_unclaim)
+        r.add_get("/fleet/status", fleet_routes.handle_status)
