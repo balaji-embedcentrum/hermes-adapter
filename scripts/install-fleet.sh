@@ -602,6 +602,14 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    # Pin the Docker Engine API version. Traefik v3's docker provider
+    # defaults to an older API negotiation that modern Docker daemons
+    # (v25+ installed fresh from get.docker.com) reject with
+    # "client version too old. Minimum supported API version is 1.40".
+    # Without this, Traefik fails to read container labels, no routes
+    # register, and every HTTP request 404s through the fallback.
+    environment:
+      DOCKER_API_VERSION: "1.43"
     command:
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
