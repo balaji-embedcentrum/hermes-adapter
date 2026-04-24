@@ -75,6 +75,83 @@ ok()   { printf "%s✓ %s%s\n" "$C_GREEN" "$1" "$C_RESET"; }
 warn() { printf "%s⚠ %s%s\n" "$C_YELLOW" "$1" "$C_RESET"; }
 die()  { printf "%s✗ %s%s\n" "$C_RED" "$1" "$C_RESET" >&2; exit 1; }
 
+# --- Self-bootstrap (curl|bash friendly) -----------------------------------
+#
+# This script is designed to work as a single-command install on a naked
+# Ubuntu 22/24 VPS. When piped through bash:
+#
+#   curl -fsSL .../install-fleet.sh | bash -s -- --domain X --acme-email Y
+#
+# we won't have the rest of the hermes-adapter repo on disk, so we:
+#   1. install Docker + compose plugin (via get.docker.com) if missing
+#   2. install git if missing (needed to clone the repo)
+#   3. clone hermes-adapter to $BOOTSTRAP_DIR (default /opt/hermes-adapter)
+#   4. re-exec this script from the cloned tree so the rest of the flow
+#      can docker-build the adapter image locally and read sibling files
+#
+# When you've already cloned the repo manually and are running
+# ./scripts/install-fleet.sh, all of this is skipped.
+#
+BOOTSTRAP_DIR="${BOOTSTRAP_DIR:-/opt/hermes-adapter}"
+BOOTSTRAP_REPO="${BOOTSTRAP_REPO:-https://github.com/balaji-embedcentrum/hermes-adapter.git}"
+BOOTSTRAP_REF="${BOOTSTRAP_REF:-main}"
+SUDO=""; [ "$(id -u)" = "0" ] || SUDO="sudo"
+
+_ensure_tool() {
+  # Install one of the listed packages if the binary is missing.
+  local bin="$1"; shift
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    say "installing $bin"
+    $SUDO apt-get update -qq
+    $SUDO apt-get install -y --no-install-recommends "$@"
+  fi
+}
+
+_ensure_docker() {
+  if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    return 0
+  fi
+  say "installing Docker Engine + compose plugin (via get.docker.com)"
+  curl -fsSL https://get.docker.com | $SUDO sh
+  command -v docker >/dev/null 2>&1 || die "Docker install failed"
+  docker compose version >/dev/null 2>&1 || die "Docker compose plugin missing after install"
+  ok "Docker $(docker --version | cut -d, -f1)"
+}
+
+# Are we running from a clone of the hermes-adapter repo? If yes, no
+# bootstrap needed — sibling files (Dockerfile, pyproject.toml, module
+# source) are on disk and we can docker-build locally. If no, we're
+# running via curl|bash or similar and need to clone + re-exec.
+_need_bootstrap() {
+  local src="${BASH_SOURCE[0]:-}"
+  [ -n "$src" ] && [ -f "$src" ] || return 0
+  local dir
+  dir="$(cd -- "$(dirname -- "$src")/.." &>/dev/null && pwd || echo "")"
+  [ -n "$dir" ] && [ -f "$dir/Dockerfile" ] && [ -f "$dir/pyproject.toml" ] || return 0
+  return 1
+}
+
+if _need_bootstrap; then
+  _ensure_tool git git ca-certificates
+  _ensure_docker
+
+  say "cloning $BOOTSTRAP_REPO@$BOOTSTRAP_REF → $BOOTSTRAP_DIR"
+  if [ -d "$BOOTSTRAP_DIR/.git" ]; then
+    git -C "$BOOTSTRAP_DIR" fetch --depth=1 origin "$BOOTSTRAP_REF"
+    git -C "$BOOTSTRAP_DIR" reset --hard "origin/$BOOTSTRAP_REF"
+  else
+    $SUDO mkdir -p "$(dirname "$BOOTSTRAP_DIR")"
+    $SUDO chown "$USER:$USER" "$(dirname "$BOOTSTRAP_DIR")" 2>/dev/null || true
+    git clone --depth=1 --branch "$BOOTSTRAP_REF" "$BOOTSTRAP_REPO" "$BOOTSTRAP_DIR"
+  fi
+  ok "bootstrap complete — re-exec'ing from $BOOTSTRAP_DIR/scripts/install-fleet.sh"
+  exec "$BOOTSTRAP_DIR/scripts/install-fleet.sh" "$@"
+fi
+
+# Docker must be available from this point on.
+_ensure_docker
+# End self-bootstrap -----------------------------------------------------
+
 # --- Parse flags ------------------------------------------------------------
 DOMAIN=""
 ACME_EMAIL=""
@@ -370,9 +447,7 @@ ADAPTER_IMAGE="${ADAPTER_IMAGE:-ghcr.io/balaji-embedcentrum/hermes-adapter:lates
 AGENT_IMAGE="${AGENT_IMAGE:-nousresearch/hermes-agent:latest}"
 TRAEFIK_IMAGE="${TRAEFIK_IMAGE:-traefik:v3.1}"
 
-# --- 1. Docker check --------------------------------------------------------
-command -v docker >/dev/null      || die "Docker not found. Install: curl -fsSL https://get.docker.com | sh"
-docker compose version >/dev/null || die "Docker Compose v2 missing. Install the docker-compose-plugin package."
+# --- 1. Docker sanity (bootstrap already ensured docker is present) --------
 say "using $(docker --version)"
 
 # --- 2. DNS sanity check ----------------------------------------------------
