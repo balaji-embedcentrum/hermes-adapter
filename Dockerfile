@@ -1,17 +1,21 @@
-FROM python:3.12-slim
+# Base on the upstream hermes-agent image so ``run_agent.AIAgent`` is
+# importable for the gateway's OpenAI-compat + A2A handlers. ``hermes-agent``
+# is not published to PyPI, so this is the simplest reliable way to get it.
+FROM nousresearch/hermes-agent:latest
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# git — workspace git/* endpoints
-# gh — PR creation
-# docker CLI + compose plugin — fleet control plane shells out to
-#   `docker compose` against the host's mounted socket when
-#   FLEET_ROOT is set (see hermes_adapter.fleet).
+# Add adapter-side system deps on top of the hermes-agent image:
+#   gh                                 — workspace ``git pr`` endpoint
+#   docker-ce-cli + docker-compose-plugin — fleet control plane shells out
+#                                       to ``docker compose`` against the
+#                                       host socket when FLEET_ROOT is set
+# git/curl/python3 already present in the base image.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-         git curl ca-certificates gnupg lsb-release \
+         ca-certificates gnupg lsb-release \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
          -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
@@ -33,15 +37,14 @@ WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
 COPY hermes_adapter ./hermes_adapter
 
-# Install hermes-agent so the unified gateway's AIAgent bridge works
-# (both OpenAI-compat and A2A handlers import ``run_agent.AIAgent``).
-# Without this, ``hermes-adapter-gateway`` loads fine but every chat
-# request fails with "hermes-agent is not importable".
-RUN pip install hermes-agent \
-    && pip install '.[a2a]'
+# hermes-agent's image installs Python deps with --break-system-packages
+# (debian:13 marks the system Python as PEP 668 externally-managed); we
+# match so the adapter lands in the same site-packages where ``run_agent``
+# already lives.
+RUN pip install --break-system-packages '.[a2a]'
 
-# Default: workspace API on :8766, unified gateway on :9001 (OpenAI + A2A +
-# workspace routes on one port — used by per-agent fleet containers).
+# Workspace API on :8766, unified gateway on :9001 (OpenAI + A2A + workspace
+# routes on one port — used by per-agent fleet containers).
 ENV HERMES_ADAPTER_HOST=0.0.0.0 \
     HERMES_ADAPTER_PORT=8766 \
     A2A_HOST=0.0.0.0 \
@@ -50,5 +53,10 @@ ENV HERMES_ADAPTER_HOST=0.0.0.0 \
 
 EXPOSE 8766 9001
 
-ENTRYPOINT ["hermes-adapter"]
+# Bring our entrypoint over upstream's. Mirrors upstream's HERMES_HOME
+# bootstrap (mkdir subdirs + seed defaults) so ``run_agent.AIAgent``
+# finds the layout it expects, then execs the adapter CLI.
+COPY docker/adapter-entrypoint.sh /usr/local/bin/adapter-entrypoint.sh
+RUN chmod +x /usr/local/bin/adapter-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/adapter-entrypoint.sh"]
 CMD ["serve"]
