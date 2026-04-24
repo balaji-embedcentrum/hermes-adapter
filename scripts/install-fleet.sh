@@ -394,9 +394,25 @@ $SUDO chown -R "$USER:$USER" "$FLEET_ROOT"
 touch "$FLEET_ROOT/letsencrypt/acme.json" && chmod 600 "$FLEET_ROOT/letsencrypt/acme.json"
 ok "install root: $FLEET_ROOT"
 
-# --- 4. Pull images ---------------------------------------------------------
-say "pulling images"
-docker pull "$ADAPTER_IMAGE"
+# --- 4. Pull or build images ------------------------------------------------
+# Auto-detect: if this script is running from a cloned hermes-adapter repo
+# (there's a Dockerfile one dir up), build the adapter locally so it
+# includes whatever branch you're on (docker CLI + fleet mode, etc).
+# Otherwise fall back to pulling from the registry.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" &>/dev/null && pwd || echo "")"
+REPO_ROOT=""
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/../Dockerfile" ]; then
+  REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+fi
+
+if [ -n "$REPO_ROOT" ]; then
+  ADAPTER_IMAGE="hermes-adapter:local"
+  say "building adapter locally from $REPO_ROOT → $ADAPTER_IMAGE"
+  docker build -t "$ADAPTER_IMAGE" "$REPO_ROOT"
+else
+  say "pulling $ADAPTER_IMAGE from registry"
+  docker pull "$ADAPTER_IMAGE"
+fi
 docker pull "$AGENT_IMAGE"
 docker pull "$TRAEFIK_IMAGE"
 
