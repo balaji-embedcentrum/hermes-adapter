@@ -661,6 +661,11 @@ services:
       - traefik.http.routers.ws.entrypoints=websecure
       - traefik.http.routers.ws.tls.certresolver=le
       - traefik.http.routers.ws.middlewares=ws-strip
+      # Explicit router→service binding is REQUIRED when a single
+      # container hosts multiple routers + multiple services. Without
+      # it Traefik refuses with "Router ws cannot be linked
+      # automatically with multiple Services".
+      - traefik.http.routers.ws.service=ws
       - traefik.http.middlewares.ws-strip.replacepathregex.regex=^/agent-[a-z]+(/ws.*)$$
       - traefik.http.middlewares.ws-strip.replacepathregex.replacement=$$1
       - traefik.http.services.ws.loadbalancer.server.port=8766
@@ -669,6 +674,7 @@ services:
       - traefik.http.routers.fleet.rule=Host(`${DOMAIN}`) && PathPrefix(`/fleet`)
       - traefik.http.routers.fleet.entrypoints=websecure
       - traefik.http.routers.fleet.tls.certresolver=le
+      - traefik.http.routers.fleet.service=fleet
       - traefik.http.services.fleet.loadbalancer.server.port=8766
 
 YAML
