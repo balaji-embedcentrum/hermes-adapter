@@ -219,6 +219,26 @@ def cmd_a2a(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_gateway(args: argparse.Namespace) -> int:
+    """Run the unified per-agent gateway (OpenAI + A2A + workspace)."""
+    try:
+        from .gateway.entry import main as gateway_main
+    except ImportError as e:
+        print(
+            f"error: gateway dependencies are not installed ({e}).\n"
+            "       Install with: pip install 'hermes-adapter[a2a]'",
+            file=sys.stderr,
+        )
+        return 1
+    import os
+    if args.host:
+        os.environ["A2A_HOST"] = args.host
+    if args.port:
+        os.environ["A2A_PORT"] = str(args.port)
+    gateway_main()
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     """Run workspace + A2A from env vars (no manifest needed)."""
     import asyncio
@@ -381,6 +401,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host")
     p.add_argument("--port", type=int)
     p.set_defaults(func=cmd_a2a)
+
+    p = sub.add_parser(
+        "gateway",
+        help="Run the unified per-agent gateway (OpenAI-compat + A2A + workspace on one port)",
+    )
+    p.add_argument("--host")
+    p.add_argument("--port", type=int)
+    p.set_defaults(func=cmd_gateway)
 
     # --- compose generate ---
     p_compose = sub.add_parser("compose", help="Docker-compose helpers")

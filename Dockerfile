@@ -33,18 +33,22 @@ WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
 COPY hermes_adapter ./hermes_adapter
 
-# Install with [a2a] extras by default so the A2A server works out of the box.
-# Callers who only need the workspace API can override CMD and skip the extra.
-RUN pip install '.[a2a]'
+# Install hermes-agent so the unified gateway's AIAgent bridge works
+# (both OpenAI-compat and A2A handlers import ``run_agent.AIAgent``).
+# Without this, ``hermes-adapter-gateway`` loads fine but every chat
+# request fails with "hermes-agent is not importable".
+RUN pip install hermes-agent \
+    && pip install '.[a2a]'
 
-# Default: run both workspace API (:8766) and A2A server (:9000) in one process
+# Default: workspace API on :8766, unified gateway on :9001 (OpenAI + A2A +
+# workspace routes on one port — used by per-agent fleet containers).
 ENV HERMES_ADAPTER_HOST=0.0.0.0 \
     HERMES_ADAPTER_PORT=8766 \
     A2A_HOST=0.0.0.0 \
-    A2A_PORT=9000 \
+    A2A_PORT=9001 \
     HERMES_WORKSPACE_DIR=/workspaces
 
-EXPOSE 8766 9000
+EXPOSE 8766 9001
 
 ENTRYPOINT ["hermes-adapter"]
 CMD ["serve"]
