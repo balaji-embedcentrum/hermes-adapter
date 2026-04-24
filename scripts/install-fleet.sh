@@ -763,14 +763,20 @@ usage() {
 Usage: ./fleet <command> [args]
 
 Commands:
-  set <name> --model <provider/model-id> --key <key>
+  set <name> --model <provider/model-id> --key <key> [--env KEY=VAL]...
         Set the model + provider key for one agent. Picks the right env-var
         name from the model prefix (openrouter/* → OPENROUTER_API_KEY, etc).
-  bootstrap [--model M --key K] [--per-agent]
-        Apply the SAME model + key to every unconfigured agent in one go.
-        - No flags: prompts once for model and key (hidden), applies to all.
-        - --model / --key: fully non-interactive, applies to all.
-        - --per-agent: legacy per-agent prompt (ask for every agent).
+        Repeat --env KEY=VAL to add provider-specific config — e.g. base
+        URL for native MiniMax:
+            ./fleet set isabelle --model minimax/MiniMax-M2.7 --key sk-... \\
+                --env MINIMAX_API_BASE=https://api.minimax.io/v1
+  bootstrap [--model M --key K] [--env KEY=VAL]... [--per-agent]
+        Apply the SAME config to every unconfigured agent.
+        - No flags: prompts once for model and key, applies to all.
+        - --model / --key: fully non-interactive.
+        - --env KEY=VAL: repeatable, appended to every agent's .env.
+          Use for provider base URLs, regional overrides, etc.
+        - --per-agent: legacy per-agent prompt.
   up
         Start every configured agent container.
   down
@@ -801,10 +807,16 @@ cmd_set() {
   local name="$1"; shift
   [ -d "agents/$name" ] || { echo "no agent named $name" >&2; exit 1; }
   local model="" key=""
+  local -a extras=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --model) model="$2"; shift 2 ;;
       --key)   key="$2";   shift 2 ;;
+      --env)
+        # Repeatable. Accepts KEY=VAL (any provider-specific env var,
+        # e.g. --env MINIMAX_API_BASE=https://api.minimax.io/v1).
+        [[ "$2" == *=* ]] || { echo "--env expects KEY=VAL, got: $2" >&2; exit 1; }
+        extras+=("$2"); shift 2 ;;
       *) echo "unknown flag: $1" >&2; exit 1 ;;
     esac
   done
@@ -813,29 +825,48 @@ cmd_set() {
     read -r -s -p "API key for $name (hidden): " key; echo
   fi
   local var; var="$(key_var_for_model "$model")"
-  cat > "agents/$name/.env" <<EOF
-$var=$key
-EOF
+  {
+    echo "$var=$key"
+    for e in "${extras[@]}"; do echo "$e"; done
+  } > "agents/$name/.env"
   chmod 600 "agents/$name/.env"
   cat > "agents/$name/config.yaml" <<EOF
 model:
   default: $model
 EOF
-  echo "✓ $name: model=$model, env-var=$var"
+  local extra_summary=""
+  [ ${#extras[@]} -gt 0 ] && extra_summary=" +$(printf '%s ' "${extras[@]%%=*}")"
+  echo "✓ $name: model=$model, env-var=$var$extra_summary"
 }
 
 cmd_bootstrap() {
-  # Apply the same model + key to every unconfigured agent. Two forms:
+  # Apply the same model + key (+ optional extra env vars) to every
+  # unconfigured agent. Four forms:
   #
-  #   ./fleet bootstrap                          — prompt once, apply to all
-  #   ./fleet bootstrap --model M --key K        — fully non-interactive
-  #   ./fleet bootstrap --per-agent              — original per-agent prompt
+  #   ./fleet bootstrap
+  #       Prompt once for model + key, apply to all.
+  #
+  #   ./fleet bootstrap --model M --key K
+  #       Fully non-interactive.
+  #
+  #   ./fleet bootstrap --model minimax/MiniMax-M2.7 --key sk-... \
+  #                     --env MINIMAX_API_BASE=https://api.minimax.io/v1
+  #       Extra env vars (repeatable --env) for provider-specific config
+  #       like base URLs. Each --env KEY=VAL is appended to every agent's
+  #       .env file.
+  #
+  #   ./fleet bootstrap --per-agent
+  #       Legacy per-agent prompt (useful for mixed-model fleets).
   #
   local model="" key="" per_agent=0
+  local -a extras=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --model)     model="$2"; shift 2 ;;
       --key)       key="$2";   shift 2 ;;
+      --env)
+        [[ "$2" == *=* ]] || { echo "--env expects KEY=VAL, got: $2" >&2; return 1; }
+        extras+=("$2"); shift 2 ;;
       --per-agent) per_agent=1; shift ;;
       *) echo "unknown arg: $1" >&2; return 1 ;;
     esac
@@ -861,13 +892,17 @@ cmd_bootstrap() {
 
   # Shared-across-all path.
   if [ -z "$model" ]; then
-    read -r -p "Model for ALL agents (e.g. openrouter/minimax/minimax-m2): " model
+    read -r -p "Model for ALL agents (e.g. minimax/MiniMax-M2.7): " model
     [ -n "$model" ] || { echo "  skipped — no model given"; return 0; }
   fi
   if [ -z "$key" ]; then
     read -r -s -p "API key for ALL agents (hidden): " key; echo
     [ -n "$key" ] || { echo "  skipped — no key given"; return 0; }
   fi
+
+  # Build the --env pass-through args once.
+  local -a env_args=()
+  for e in "${extras[@]}"; do env_args+=("--env" "$e"); done
 
   local configured=0 skipped=0
   for d in agents/*/; do
@@ -877,7 +912,7 @@ cmd_bootstrap() {
       ((skipped++))
       continue
     fi
-    cmd_set "$name" --model "$model" --key "$key"
+    cmd_set "$name" --model "$model" --key "$key" "${env_args[@]}"
     ((configured++))
   done
   echo ""
