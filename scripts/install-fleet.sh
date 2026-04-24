@@ -766,9 +766,11 @@ Commands:
   set <name> --model <provider/model-id> --key <key>
         Set the model + provider key for one agent. Picks the right env-var
         name from the model prefix (openrouter/* → OPENROUTER_API_KEY, etc).
-  bootstrap
-        Interactive walkthrough — prompts for model + key for every agent
-        whose .env is still empty. Uses hidden input for the key.
+  bootstrap [--model M --key K] [--per-agent]
+        Apply the SAME model + key to every unconfigured agent in one go.
+        - No flags: prompts once for model and key (hidden), applies to all.
+        - --model / --key: fully non-interactive, applies to all.
+        - --per-agent: legacy per-agent prompt (ask for every agent).
   up
         Start every configured agent container.
   down
@@ -823,18 +825,63 @@ EOF
 }
 
 cmd_bootstrap() {
+  # Apply the same model + key to every unconfigured agent. Two forms:
+  #
+  #   ./fleet bootstrap                          — prompt once, apply to all
+  #   ./fleet bootstrap --model M --key K        — fully non-interactive
+  #   ./fleet bootstrap --per-agent              — original per-agent prompt
+  #
+  local model="" key="" per_agent=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --model)     model="$2"; shift 2 ;;
+      --key)       key="$2";   shift 2 ;;
+      --per-agent) per_agent=1; shift ;;
+      *) echo "unknown arg: $1" >&2; return 1 ;;
+    esac
+  done
+
+  if [ "$per_agent" = "1" ]; then
+    # Legacy path — ask per-agent, useful if different agents run
+    # different models on different keys.
+    for d in agents/*/; do
+      local name; name="$(basename "$d")"
+      if grep -qE '^[A-Z_]+_API_KEY=.+' "$d/.env" 2>/dev/null; then
+        echo "↷ $name: already configured, skipping"
+        continue
+      fi
+      echo "── $name ──────────────────────────────────────────"
+      read -r -p "  model (e.g. openrouter/minimax/minimax-m2): " m
+      [ -n "$m" ] || { echo "  skipped"; continue; }
+      read -r -s -p "  API key (hidden): " k; echo
+      cmd_set "$name" --model "$m" --key "$k"
+    done
+    return 0
+  fi
+
+  # Shared-across-all path.
+  if [ -z "$model" ]; then
+    read -r -p "Model for ALL agents (e.g. openrouter/minimax/minimax-m2): " model
+    [ -n "$model" ] || { echo "  skipped — no model given"; return 0; }
+  fi
+  if [ -z "$key" ]; then
+    read -r -s -p "API key for ALL agents (hidden): " key; echo
+    [ -n "$key" ] || { echo "  skipped — no key given"; return 0; }
+  fi
+
+  local configured=0 skipped=0
   for d in agents/*/; do
     local name; name="$(basename "$d")"
     if grep -qE '^[A-Z_]+_API_KEY=.+' "$d/.env" 2>/dev/null; then
       echo "↷ $name: already configured, skipping"
+      ((skipped++))
       continue
     fi
-    echo "── $name ──────────────────────────────────────────"
-    read -r -p "  model (e.g. openrouter/minimax/minimax-m2): " model
-    [ -n "$model" ] || { echo "  skipped"; continue; }
-    read -r -s -p "  API key (hidden): " key; echo
     cmd_set "$name" --model "$model" --key "$key"
+    ((configured++))
   done
+  echo ""
+  echo "bootstrap done: $configured configured, $skipped already had keys"
 }
 
 # compose_flags — assemble -f flags for the base compose file + every
@@ -870,7 +917,7 @@ cmd_list() {
 [ $# -ge 1 ] || { usage; exit 0; }
 case "$1" in
   set)        shift; cmd_set "$@" ;;
-  bootstrap)  cmd_bootstrap ;;
+  bootstrap)  shift; cmd_bootstrap "$@" ;;
   up)         cmd_up ;;
   down)       cmd_down ;;
   status)     cmd_status ;;
