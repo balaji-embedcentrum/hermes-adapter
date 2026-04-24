@@ -16,16 +16,29 @@
 # After install, you fill in each agent's model + key with the generated
 # `./fleet` helper, then `./fleet up` starts the agent containers.
 #
-# Usage:
+# Usage (fresh install):
 #   curl -fsSL https://raw.githubusercontent.com/balaji-embedcentrum/hermes-adapter/main/scripts/install-fleet.sh \
 #     | bash -s -- \
 #         --domain agents.example.com \
 #         --acme-email you@example.com
 #
+# Usage (migrate an existing fleet to the per-session bind-mount
+# architecture — idempotent, safe to re-run):
+#   curl -fsSL .../install-fleet.sh | bash -s -- --upgrade
+#   # or, if already checked out:
+#   FLEET_ROOT=/srv/hermes-fleet ./scripts/install-fleet.sh --upgrade
+#
 # Flags:
-#   --domain         REQUIRED. Public hostname of the agent VPS (DNS A record
-#                    must already point at this host).
-#   --acme-email     REQUIRED. Email used by Let's Encrypt for cert renewals.
+#   --upgrade        Migrate an existing install at $FLEET_ROOT to the
+#                    /fleet/claim per-session bind-mount architecture.
+#                    Patches docker-compose.yml + Caddyfile (if present),
+#                    creates sentinel workspace + override dir, rebuilds
+#                    adapter image, recreates containers. No other flags
+#                    needed. Exits after migration.
+#   --domain         REQUIRED for fresh install. Public hostname of the
+#                    agent VPS (DNS A record must already point here).
+#   --acme-email     REQUIRED for fresh install. Let's Encrypt renewal
+#                    contact email.
 #   --protocol       OPTIONAL. openai | a2a (default: openai).
 #   --studio-url     OPTIONAL. CORS origin for Studio (default: omit; only
 #                    needed for openai-protocol fleets that browser-call
@@ -70,9 +83,11 @@ PROTOCOL="openai"
 PERSONAS_FILE=""
 AGENT_NAMES_DEFAULT="emma mateo aarav mei lea sofia yuki priya lukas diego"
 AGENT_NAMES=""
+UPGRADE_MODE=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --upgrade)        UPGRADE_MODE=1;      shift ;;
     --domain)         DOMAIN="$2";         shift 2 ;;
     --acme-email)     ACME_EMAIL="$2";     shift 2 ;;
     --studio-url)     STUDIO_URL="$2";     shift 2 ;;
@@ -80,11 +95,245 @@ while [ $# -gt 0 ]; do
     --personas-file)  PERSONAS_FILE="$2";  shift 2 ;;
     --names)          AGENT_NAMES="$2";    shift 2 ;;
     -h|--help)
-      sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//'
+      # Print the header doc block between the two "# ---" dividers.
+      awk 'BEGIN{n=0} /^# ---/ {n++; if(n==2) exit; next} n==1 {sub(/^# ?/,""); print}' "$0"
       exit 0 ;;
     *) die "unknown flag: $1 (try --help)" ;;
   esac
 done
+
+# --- Upgrade mode -----------------------------------------------------------
+# Re-run this script with --upgrade to migrate an existing fleet to the
+# /fleet/claim per-session bind-mount architecture without re-provisioning.
+# Idempotent; safe to run multiple times. Exits after migration.
+if [ "$UPGRADE_MODE" = "1" ]; then
+  FLEET_ROOT="${FLEET_ROOT:-/srv/hermes-fleet}"
+
+  say "upgrade mode — migrating existing fleet at $FLEET_ROOT"
+  [ -f "$FLEET_ROOT/docker-compose.yml" ] || die "no docker-compose.yml at $FLEET_ROOT — nothing to upgrade"
+  [ -f "$FLEET_ROOT/.bearer-key" ]        || die "no .bearer-key at $FLEET_ROOT — not an install-fleet deployment"
+  command -v docker >/dev/null            || die "docker CLI not available"
+  command -v python3 >/dev/null           || die "python3 is required (for YAML patching). apt-get install -y python3 python3-yaml"
+  python3 -c "import yaml" 2>/dev/null    || die "PyYAML missing. Install: apt-get install -y python3-yaml (or: pip3 install pyyaml)"
+
+  cd "$FLEET_ROOT"
+
+  # 1. Backup docker-compose.yml
+  if [ ! -f docker-compose.yml.pre-fleet-bak ]; then
+    cp docker-compose.yml docker-compose.yml.pre-fleet-bak
+    ok "backed up → $FLEET_ROOT/docker-compose.yml.pre-fleet-bak"
+  else
+    warn "backup already exists at $FLEET_ROOT/docker-compose.yml.pre-fleet-bak — keeping first one"
+  fi
+
+  # 2. Sentinel workspace + override dir
+  mkdir -p workspaces/_unclaimed compose.override
+  chmod 755 workspaces/_unclaimed
+  ok "sentinel workspace + compose.override/ ready"
+
+  # 3. Patch docker-compose.yml via PyYAML
+  BEARER_KEY="$(cat .bearer-key)"
+  export FLEET_ROOT BEARER_KEY
+  python3 <<'PY'
+import os, re, sys, yaml
+
+fleet_root = os.environ["FLEET_ROOT"]
+bearer = os.environ["BEARER_KEY"]
+path = "docker-compose.yml"
+
+with open(path) as f:
+    compose = yaml.safe_load(f)
+
+services = compose.setdefault("services", {})
+
+# --- Adapter service patch -------------------------------------------------
+# Support both `adapter` and `hermes-fleet-adapter` service names.
+adapter_svc = None
+for candidate in ("adapter", "hermes-fleet-adapter"):
+    if candidate in services:
+        adapter_svc = candidate
+        break
+if adapter_svc is None:
+    print("!! no adapter service found in docker-compose.yml", file=sys.stderr)
+    sys.exit(2)
+
+svc = services[adapter_svc]
+
+# Normalise environment to a dict (compose allows list or dict form).
+env = svc.get("environment", {})
+if isinstance(env, list):
+    env_dict = {}
+    for item in env:
+        if not isinstance(item, str):
+            continue
+        if "=" in item:
+            k, v = item.split("=", 1)
+        elif ":" in item:
+            k, v = item.split(":", 1)
+        else:
+            continue
+        env_dict[k.strip()] = v.strip()
+    env = env_dict
+svc["environment"] = env
+
+env["HERMES_FLEET_MODE"] = "1"
+env["FLEET_ROOT"] = "/srv/hermes-fleet"
+env.setdefault("FLEET_CONTROL_KEY", "${BEARER_KEY}")
+
+# Mounts — docker socket + fleet root, idempotent by destination.
+volumes = svc.setdefault("volumes", [])
+def has_target(vlist, target):
+    for v in vlist:
+        if isinstance(v, str) and (v.endswith(":" + target) or v.endswith(":" + target + ":ro")):
+            return True
+        if isinstance(v, dict) and v.get("target") == target:
+            return True
+    return False
+
+if not has_target(volumes, "/srv/hermes-fleet"):
+    volumes.append(f"{fleet_root}:/srv/hermes-fleet")
+if not has_target(volumes, "/var/run/docker.sock"):
+    volumes.append("/var/run/docker.sock:/var/run/docker.sock")
+
+print(f"  adapter: env + mounts patched (service={adapter_svc})")
+
+# --- Traefik label for /fleet/* -------------------------------------------
+# Only patched when the adapter is fronted by Traefik (labels present).
+# Caddy deployments are patched separately below.
+labels = svc.get("labels", [])
+if isinstance(labels, list) and any("traefik" in (s or "") for s in labels):
+    if not any("routers.fleet" in (s or "") for s in labels):
+        labels.extend([
+            "traefik.http.routers.fleet.rule=Host(`${DOMAIN}`) && PathPrefix(`/fleet`)",
+            "traefik.http.routers.fleet.entrypoints=websecure",
+            "traefik.http.routers.fleet.tls.certresolver=le",
+            "traefik.http.services.fleet.loadbalancer.server.port=8766",
+        ])
+        svc["labels"] = labels
+        print("  adapter: Traefik /fleet/* route added")
+    else:
+        print("  adapter: Traefik /fleet/* route already present")
+
+# --- Agent services: swap shared workspace for sentinel --------------------
+SHARED_PATTERNS = (
+    re.compile(r"^\./workspaces(:|$)"),          # ./workspaces[:anything]
+    re.compile(r"^\./workspaces/[^/_]"),         # ./workspaces/<existing-user>:
+)
+SENTINEL_MOUNT = "./workspaces/_unclaimed:/opt/workspaces:ro"
+LEGACY_SHARED_TARGETS = ("/workspaces", "/opt/workspaces")
+
+patched = 0
+for name, s in services.items():
+    if not name.startswith("hermes-agent-"):
+        continue
+    vols = s.get("volumes", [])
+    new_vols = []
+    swapped = False
+    for v in vols:
+        if not isinstance(v, str):
+            new_vols.append(v)
+            continue
+        # Strip any default shared-workspace mounts; we'll replace with sentinel.
+        if any(v.endswith(":" + t) or v.endswith(":" + t + ":ro") for t in LEGACY_SHARED_TARGETS):
+            # Only strip when the source looks like the shared dir
+            if v.startswith("./workspaces:") or v.startswith("./workspaces/_"):
+                swapped = True
+                continue
+        new_vols.append(v)
+    if SENTINEL_MOUNT not in new_vols:
+        new_vols.insert(0, SENTINEL_MOUNT)
+        swapped = True
+    s["volumes"] = new_vols
+
+    # Ensure HERMES_WORKSPACE_DIR is set so repo_finder scopes to the mount.
+    ae = s.get("environment", {})
+    if isinstance(ae, dict):
+        if ae.get("HERMES_WORKSPACE_DIR") != "/opt/workspaces":
+            ae["HERMES_WORKSPACE_DIR"] = "/opt/workspaces"
+            s["environment"] = ae
+            swapped = True
+    if swapped:
+        patched += 1
+
+print(f"  agents: {patched} service(s) switched to sentinel mount")
+
+with open(path, "w") as f:
+    yaml.safe_dump(compose, f, default_flow_style=False, sort_keys=False)
+print("docker-compose.yml rewritten")
+PY
+  ok "docker-compose.yml patched"
+
+  # 4. Caddy patch — only runs if Caddyfile is present.
+  if [ -f Caddyfile ]; then
+    if grep -q "PathRegexp\|path /fleet\|@fleet" Caddyfile 2>/dev/null && grep -q "fleet" Caddyfile; then
+      ok "Caddyfile already has /fleet route"
+    else
+      say "patching Caddyfile with /fleet/* route"
+      python3 <<'PY'
+import re
+with open("Caddyfile") as f:
+    content = f.read()
+fleet_block = """\
+    # Fleet control plane — claim/unclaim/status. Bearer-auth'd in the adapter.
+    @fleet path /fleet*
+    handle @fleet {
+        reverse_proxy adapter:8766
+    }
+
+"""
+# Insert right after the opening brace of the first domain site block.
+pattern = re.compile(r'^([a-z0-9][a-z0-9.-]+\.[a-z]{2,}\s*\{\n)', re.M)
+new, n = pattern.subn(r'\1' + fleet_block, content, count=1)
+if n > 0:
+    with open("Caddyfile", "w") as f:
+        f.write(new)
+    print("Caddyfile patched")
+else:
+    print("!! could not find a site block in Caddyfile — skipping")
+PY
+      ok "Caddyfile patched"
+    fi
+  else
+    warn "no Caddyfile at $FLEET_ROOT/Caddyfile — skipping Caddy patch (Traefik labels were updated if applicable)"
+  fi
+
+  # 5. Pull + rebuild adapter image so it has docker CLI baked in.
+  say "pulling latest adapter image"
+  docker pull "${ADAPTER_IMAGE:-ghcr.io/balaji-embedcentrum/hermes-adapter:latest}" || \
+    warn "pull failed — will use local image if present"
+
+  # 6. Recreate containers with new env + mounts.
+  say "recreating containers with new config"
+  if [ -x ./fleet ]; then
+    ./fleet reload 2>&1 | tail -20 || warn "./fleet reload exited non-zero"
+  else
+    docker compose up -d --force-recreate
+  fi
+
+  cat <<EOF
+
+${C_GREEN}${C_BOLD}═══ Upgrade complete ═══${C_RESET}
+
+Verify the adapter picked up fleet mode:
+  ${C_DIM}docker exec hermes-fleet-adapter printenv | grep -E 'FLEET|HERMES_FLEET'${C_RESET}
+
+Verify sentinel exists:
+  ${C_DIM}ls -la $FLEET_ROOT/workspaces/_unclaimed${C_RESET}
+
+Test claim (needs Studio PR merged + bearer auth):
+  ${C_DIM}curl -fsS -X POST -H "Authorization: Bearer \$(cat $FLEET_ROOT/.bearer-key)" \\
+    -H 'Content-Type: application/json' \\
+    -d '{"agent":"isabelle","user":"balaji-embedcentrum"}' \\
+    https://${DOMAIN:-<DOMAIN>}/fleet/claim${C_RESET}
+
+Rollback (if needed):
+  ${C_DIM}cp $FLEET_ROOT/docker-compose.yml.pre-fleet-bak $FLEET_ROOT/docker-compose.yml${C_RESET}
+  ${C_DIM}./fleet reload${C_RESET}
+
+EOF
+  exit 0
+fi
+# --- End upgrade mode -------------------------------------------------------
 
 [ -n "$DOMAIN" ]     || die "missing required --domain"
 [ -n "$ACME_EMAIL" ] || die "missing required --acme-email"
