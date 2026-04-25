@@ -496,6 +496,20 @@ else
   ok "bearer key generated and saved to $FLEET_ROOT/.bearer-key"
 fi
 
+# Per-agent filebrowser admin password — used by every <name>-files.<domain>
+# subdomain. Filebrowser's own auth (DB-backed) — admin/<password>. We bake
+# the credential into a one-shot init container so the user never has to
+# touch the filebrowser CLI.
+if [ -f "$FLEET_ROOT/.fb-password" ]; then
+  FB_PASSWORD="$(cat "$FLEET_ROOT/.fb-password")"
+  warn "reusing existing filebrowser password at $FLEET_ROOT/.fb-password"
+else
+  FB_PASSWORD="$(openssl rand -hex 12)"
+  echo "$FB_PASSWORD" > "$FLEET_ROOT/.fb-password"
+  chmod 600 "$FLEET_ROOT/.fb-password"
+  ok "filebrowser admin password generated and saved to $FLEET_ROOT/.fb-password"
+fi
+
 # --- 6. Stack-level .env ----------------------------------------------------
 # FLEET_HOST_ROOT is the host-absolute path bind-mounted into the adapter
 # container at /srv/hermes-fleet. The adapter needs this to find
@@ -504,6 +518,7 @@ cat > "$FLEET_ROOT/.env" <<EOF
 DOMAIN=$DOMAIN
 STUDIO_URL=$STUDIO_URL
 BEARER_KEY=$BEARER_KEY
+FB_PASSWORD=$FB_PASSWORD
 ACME_EMAIL=$ACME_EMAIL
 FLEET_HOST_ROOT=$FLEET_ROOT
 EOF
@@ -676,6 +691,14 @@ sed -i.bak \
   "$COMPOSE"
 rm -f "$COMPOSE.bak"
 
+# Filebrowser basic-auth hash (apr1) — Traefik's basicauth middleware
+# expects htpasswd-style "user:hash" pairs. The hash contains literal
+# $-signs which compose interprets as variable refs unless we double
+# them; do that here, then sed-substitute into the template.
+FB_HASH="$(openssl passwd -apr1 "$FB_PASSWORD" | sed 's/\$/$$/g')"
+sed -i.bak "s|FB_AUTH_HASH_PLACEHOLDER|$FB_HASH|g" "$COMPOSE"
+rm -f "$COMPOSE.bak"
+
 # Append one service block per agent. Protocol-specific env keys plus
 # (optional) AGENT_DESCRIPTION / AGENT_SKILLS sourced from persona metadata.
 for name in $AGENT_NAMES; do
@@ -739,6 +762,39 @@ cat >> "$COMPOSE" <<YAML
       - traefik.http.routers.$name.middlewares=$name-strip
       - traefik.http.middlewares.$name-strip.stripprefix.prefixes=/agent-$name
       - traefik.http.services.$name.loadbalancer.server.port=$AGENT_PORT
+
+  # Per-agent filebrowser sidecar — exposes the workspaces dir at
+  # https://$name-files.\${DOMAIN}. Filebrowser itself runs --noauth;
+  # Traefik adds basic auth in front (admin / \${FB_PASSWORD}). See
+  # /srv/hermes-fleet/.fb-password.
+  hermes-fb-$name:
+    image: filebrowser/filebrowser:latest
+    container_name: hermes-fb-$name
+    restart: unless-stopped
+    user: "0:0"
+    command:
+      - --noauth
+      - --root=/srv
+      - --address=0.0.0.0
+      - --port=80
+    volumes:
+      # All user workspaces. Filebrowser sees siblings — by design,
+      # this is an admin tool. Auth is enforced at the Traefik layer.
+      - ./workspaces:/srv
+    networks: [fleet]
+    profiles: ["agents"]
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.fb-$name.rule=Host(\`$name-files.\${DOMAIN}\`)
+      - traefik.http.routers.fb-$name.entrypoints=websecure
+      - traefik.http.routers.fb-$name.tls.certresolver=le
+      - traefik.http.routers.fb-$name.service=fb-$name
+      - traefik.http.routers.fb-$name.middlewares=fb-auth
+      - traefik.http.services.fb-$name.loadbalancer.server.port=80
+      # Shared basic-auth middleware (declared once, reused by every fb
+      # router). Hash is openssl passwd -apr1 \${FB_PASSWORD} computed
+      # at install time and injected by install-fleet.sh.
+      - "traefik.http.middlewares.fb-auth.basicauth.users=admin:FB_AUTH_HASH_PLACEHOLDER"
 
 YAML
 done
@@ -899,6 +955,7 @@ ${C_GREEN}${C_BOLD}═══ Fleet installed ═══${C_RESET}
 
 Domain:         ${C_CYAN}https://$DOMAIN${C_RESET}
 Bearer key:     ${C_CYAN}$FLEET_ROOT/.bearer-key${C_RESET}
+Filebrowser:    ${C_CYAN}https://<name>-files.$DOMAIN${C_RESET}  (admin / $(cat "$FLEET_ROOT/.fb-password"))
 Stack root:     ${C_CYAN}$FLEET_ROOT${C_RESET}
 Helper:         ${C_CYAN}$FLEET_ROOT/fleet${C_RESET}
 
