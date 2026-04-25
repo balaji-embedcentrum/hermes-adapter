@@ -710,6 +710,11 @@ cat >> "$COMPOSE" <<YAML
       # Override upstream's HERMES_HOME=/opt/data — point at the
       # mounted agent dir so this agent's .env + config.yaml get loaded.
       HERMES_HOME: /root/.hermes
+      # The base image installs hermes-agent via ``pip install -e .``
+      # from /opt/hermes; our adapter pip install on top can break the
+      # editable .pth so ``run_agent`` isn't importable. The gateway
+      # falls back to inserting this path into sys.path at startup.
+      HERMES_AGENT_ROOT: /opt/hermes
       AGENT_NAME: $name
       AGENT_DESCRIPTION: "$agent_desc"
       AGENT_SKILLS: "$skills"
