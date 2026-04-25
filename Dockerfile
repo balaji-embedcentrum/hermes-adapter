@@ -12,13 +12,16 @@ ENV PYTHONUNBUFFERED=1 \
 #                                        repo setup below (NOT in the base
 #                                        image despite git/python3 being
 #                                        present)
+#   python3-pip                        — base image strips pip after its
+#                                        own install layer; we need it
+#                                        back to install the adapter
 #   gh                                 — workspace ``git pr`` endpoint
 #   docker-ce-cli + docker-compose-plugin — fleet control plane shells out
 #                                       to ``docker compose`` against the
 #                                       host socket when FLEET_ROOT is set
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-         curl ca-certificates gnupg lsb-release \
+         curl ca-certificates gnupg lsb-release python3-pip \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
          -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
