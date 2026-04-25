@@ -807,7 +807,7 @@ cat >> "$COMPOSE" <<YAML
       # Source of truth for this list: hermes_adapter/proxy/providers.py.
       # Adding a new provider = update both files.
       MINIMAX_API_KEY: "proxy"
-      MINIMAX_API_BASE: "http://adapter:8766/proxy/$name/minimax/v1"
+      MINIMAX_BASE_URL: "http://adapter:8766/proxy/$name/minimax/v1"
       OPENAI_API_KEY: "proxy"
       OPENAI_API_BASE: "http://adapter:8766/proxy/$name/openai/v1"
       ANTHROPIC_API_KEY: "proxy"
