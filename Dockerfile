@@ -8,14 +8,17 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Add adapter-side system deps on top of the hermes-agent image:
+#   curl                               — fetch keyrings for the gh + docker
+#                                        repo setup below (NOT in the base
+#                                        image despite git/python3 being
+#                                        present)
 #   gh                                 — workspace ``git pr`` endpoint
 #   docker-ce-cli + docker-compose-plugin — fleet control plane shells out
 #                                       to ``docker compose`` against the
 #                                       host socket when FLEET_ROOT is set
-# git/curl/python3 already present in the base image.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-         ca-certificates gnupg lsb-release \
+         curl ca-certificates gnupg lsb-release \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
          -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
