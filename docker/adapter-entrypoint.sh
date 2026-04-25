@@ -11,9 +11,13 @@ INSTALL_DIR="/opt/hermes"
 
 mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills}
 
-if [ ! -f "$HERMES_HOME/.env" ] && [ -f "$INSTALL_DIR/.env.example" ]; then
-    cp "$INSTALL_DIR/.env.example" "$HERMES_HOME/.env"
-fi
+# DO NOT bootstrap a .env file here. In fleet mode, provider keys live
+# in /srv/hermes-fleet/agent-secrets/<name>/.env (read by the adapter
+# proxy, never mounted into agents). Copying upstream's .env.example
+# would leave a misleading file at $HERMES_HOME/.env that an auditor or
+# prompt-injection probe would read first — even though it has no real
+# keys, its presence undermines the "agent has no secret" invariant.
+# Operators who want a per-agent .env can place one on the host.
 if [ ! -f "$HERMES_HOME/config.yaml" ] && [ -f "$INSTALL_DIR/cli-config.yaml.example" ]; then
     cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
 fi
