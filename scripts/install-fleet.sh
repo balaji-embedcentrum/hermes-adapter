@@ -459,10 +459,52 @@ fi
 
 # --- 3. Make folders --------------------------------------------------------
 SUDO=""; [ -w "$(dirname "$FLEET_ROOT")" ] || SUDO="sudo"
-$SUDO mkdir -p "$FLEET_ROOT/workspaces" "$FLEET_ROOT/agents" "$FLEET_ROOT/agent-secrets" "$FLEET_ROOT/letsencrypt"
+$SUDO mkdir -p "$FLEET_ROOT/workspaces" "$FLEET_ROOT/agents" "$FLEET_ROOT/agent-secrets"
 $SUDO chown -R "$USER:$USER" "$FLEET_ROOT"
-touch "$FLEET_ROOT/letsencrypt/acme.json" && chmod 600 "$FLEET_ROOT/letsencrypt/acme.json"
 ok "install root: $FLEET_ROOT"
+
+# --- 3.5 Persistent state OUTSIDE the install root --------------------------
+# Survives ``rm -rf $FLEET_ROOT`` so a nuclear reinstall doesn't:
+#   * burn through Let's Encrypt rate limits (5 certs/week per identifier
+#     set — we hit this once already)
+#   * invalidate the bearer token already configured in Studio's Supabase
+#     + Akela's registry (forcing a manual SQL update each time)
+#   * regenerate the filebrowser admin password
+#
+# Traefik bind-mounts ``$STATE_DIR/letsencrypt`` DIRECTLY (not a copy in
+# $FLEET_ROOT), so cert issuance + renewal write straight to the
+# persistent location. No sync-back race.
+#
+# To do a TRULY fresh install (new bearer + cert from scratch):
+#   sudo rm -rf $STATE_DIR $FLEET_ROOT
+# Do NOT do this casually — you'll hit the LE rate limit if you've
+# reinstalled in the last 168 hours.
+STATE_DIR="${HERMES_FLEET_STATE_DIR:-/var/lib/hermes-fleet-state}"
+$SUDO mkdir -p "$STATE_DIR/letsencrypt"
+$SUDO chmod 700 "$STATE_DIR"
+$SUDO touch "$STATE_DIR/letsencrypt/acme.json"
+$SUDO chmod 600 "$STATE_DIR/letsencrypt/acme.json"
+
+# One-time migration: if a previous install left acme.json inside
+# $FLEET_ROOT/letsencrypt (pre-#36 layout) and $STATE_DIR is still
+# empty, move it across so we don't waste the cert.
+if [ -s "$FLEET_ROOT/letsencrypt/acme.json" ] && [ ! -s "$STATE_DIR/letsencrypt/acme.json" ]; then
+  $SUDO cp "$FLEET_ROOT/letsencrypt/acme.json" "$STATE_DIR/letsencrypt/acme.json"
+  $SUDO chmod 600 "$STATE_DIR/letsencrypt/acme.json"
+  ok "migrated existing acme.json to $STATE_DIR/letsencrypt/"
+fi
+
+# Restore bearer + fb-password if present in state. Step 5 below sees
+# the file already exists and reuses instead of generating a new one,
+# keeping Studio + Akela registrations valid.
+for f in .bearer-key .fb-password; do
+  if [ -f "$STATE_DIR/$f" ] && [ ! -f "$FLEET_ROOT/$f" ]; then
+    $SUDO cp "$STATE_DIR/$f" "$FLEET_ROOT/$f"
+    $SUDO chown "$USER:$USER" "$FLEET_ROOT/$f"
+    chmod 600 "$FLEET_ROOT/$f"
+    ok "restored $f from $STATE_DIR"
+  fi
+done
 
 # --- 4. Pull or build images ------------------------------------------------
 # Auto-detect: if this script is running from a cloned hermes-adapter repo
@@ -510,6 +552,15 @@ else
   ok "filebrowser admin password generated and saved to $FLEET_ROOT/.fb-password"
 fi
 
+# Mirror the (possibly newly generated) credentials to STATE_DIR so the
+# next ``rm -rf $FLEET_ROOT`` can restore them. Idempotent — same
+# content overwrites identical content. The acme.json mirror happens
+# in a Traefik-side hook below (step 8) since LE writes to it after
+# certs are obtained, not at install time.
+$SUDO cp "$FLEET_ROOT/.bearer-key" "$STATE_DIR/.bearer-key"
+$SUDO cp "$FLEET_ROOT/.fb-password" "$STATE_DIR/.fb-password"
+$SUDO chmod 600 "$STATE_DIR/.bearer-key" "$STATE_DIR/.fb-password"
+
 # --- 6. Stack-level .env ----------------------------------------------------
 # FLEET_HOST_ROOT is the host-absolute path bind-mounted into the adapter
 # container at /srv/hermes-fleet. The adapter needs this to find
@@ -521,6 +572,7 @@ BEARER_KEY=$BEARER_KEY
 FB_PASSWORD=$FB_PASSWORD
 ACME_EMAIL=$ACME_EMAIL
 FLEET_HOST_ROOT=$FLEET_ROOT
+STATE_DIR=$STATE_DIR
 EOF
 chmod 600 "$FLEET_ROOT/.env"
 ok "wrote $FLEET_ROOT/.env"
@@ -642,7 +694,10 @@ services:
       - --certificatesresolvers.le.acme.tlschallenge=true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./letsencrypt:/letsencrypt
+      # acme.json lives OUTSIDE the install root so ``rm -rf $FLEET_ROOT``
+      # doesn't wipe issued certs. STATE_DIR is set in the stack .env
+      # (see install-fleet.sh step 3.5).
+      - ${STATE_DIR}/letsencrypt:/letsencrypt
     networks: [fleet]
 
   adapter:
