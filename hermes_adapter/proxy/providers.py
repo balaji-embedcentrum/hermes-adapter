@@ -22,8 +22,17 @@ class Provider:
                           override the default upstream with (e.g.
                           regional endpoints). Falls back to
                           ``default_base_url`` when unset.
-    * ``default_base_url`` — the public upstream the agent's request
-                              forwards to.
+    * ``default_base_url`` — the upstream HOST ROOT (no version path).
+                              The agent's ``*_API_BASE`` env in compose
+                              already includes the version, so the
+                              captured request path looks like
+                              ``v1/chat/completions``. We append that
+                              to the host root to get the final URL.
+
+    Wrong: ``https://api.minimax.io/v1`` + ``v1/chat/completions``
+           = ``https://api.minimax.io/v1/v1/chat/completions`` (404).
+    Right: ``https://api.minimax.io`` + ``v1/chat/completions``
+           = ``https://api.minimax.io/v1/chat/completions``.
     """
 
     name: str
@@ -35,18 +44,19 @@ class Provider:
 PROVIDERS: dict[str, Provider] = {
     p.name: p
     for p in [
-        Provider("minimax", "MINIMAX_API_KEY", "MINIMAX_API_BASE", "https://api.minimax.io/v1"),
-        Provider("openai", "OPENAI_API_KEY", "OPENAI_API_BASE", "https://api.openai.com/v1"),
-        Provider("anthropic", "ANTHROPIC_API_KEY", "ANTHROPIC_API_BASE", "https://api.anthropic.com/v1"),
-        Provider("openrouter", "OPENROUTER_API_KEY", "OPENROUTER_API_BASE", "https://openrouter.ai/api/v1"),
-        Provider("together", "TOGETHER_API_KEY", "TOGETHER_API_BASE", "https://api.together.xyz/v1"),
-        Provider("groq", "GROQ_API_KEY", "GROQ_API_BASE", "https://api.groq.com/openai/v1"),
+        Provider("minimax",    "MINIMAX_API_KEY",    "MINIMAX_API_BASE",    "https://api.minimax.io"),
+        Provider("openai",     "OPENAI_API_KEY",     "OPENAI_API_BASE",     "https://api.openai.com"),
+        Provider("anthropic",  "ANTHROPIC_API_KEY",  "ANTHROPIC_API_BASE",  "https://api.anthropic.com"),
+        Provider("openrouter", "OPENROUTER_API_KEY", "OPENROUTER_API_BASE", "https://openrouter.ai/api"),
+        Provider("together",   "TOGETHER_API_KEY",   "TOGETHER_API_BASE",   "https://api.together.xyz"),
+        Provider("groq",       "GROQ_API_KEY",       "GROQ_API_BASE",       "https://api.groq.com/openai"),
         # Google Gemini exposes an OpenAI-compatible endpoint at
-        # ``/v1beta/openai`` that accepts ``Authorization: Bearer <key>``,
-        # so it slots into the same proxy pattern as the others. The
-        # native /v1/models?key=... API would need a different injection
-        # strategy and is intentionally not used here.
-        Provider("google", "GEMINI_API_KEY", "GEMINI_API_BASE",
-                 "https://generativelanguage.googleapis.com/v1beta/openai"),
+        # ``/v1beta/openai`` that accepts ``Authorization: Bearer <key>``.
+        # The agent's GEMINI_API_BASE includes ``/v1beta/openai`` so the
+        # captured path is ``v1beta/openai/chat/completions``. Default
+        # base must NOT include that prefix — same double-prefix rule
+        # as every other provider.
+        Provider("google",     "GEMINI_API_KEY",     "GEMINI_API_BASE",
+                 "https://generativelanguage.googleapis.com"),
     ]
 }
