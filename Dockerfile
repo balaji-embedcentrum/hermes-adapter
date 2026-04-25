@@ -43,8 +43,9 @@ COPY hermes_adapter ./hermes_adapter
 # hermes-agent's image installs Python deps with --break-system-packages
 # (debian:13 marks the system Python as PEP 668 externally-managed); we
 # match so the adapter lands in the same site-packages where ``run_agent``
-# already lives.
-RUN pip install --break-system-packages '.[a2a]'
+# already lives. Use ``python3 -m pip`` because the base image doesn't
+# expose a ``pip`` shim on PATH.
+RUN python3 -m pip install --break-system-packages '.[a2a]'
 
 # Workspace API on :8766, unified gateway on :9001 (OpenAI + A2A + workspace
 # routes on one port — used by per-agent fleet containers).
