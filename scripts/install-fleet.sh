@@ -691,13 +691,8 @@ sed -i.bak \
   "$COMPOSE"
 rm -f "$COMPOSE.bak"
 
-# Filebrowser basic-auth hash (apr1) — Traefik's basicauth middleware
-# expects htpasswd-style "user:hash" pairs. The hash contains literal
-# $-signs which compose interprets as variable refs unless we double
-# them; do that here, then sed-substitute into the template.
-FB_HASH="$(openssl passwd -apr1 "$FB_PASSWORD" | sed 's/\$/$$/g')"
-sed -i.bak "s|FB_AUTH_HASH_PLACEHOLDER|$FB_HASH|g" "$COMPOSE"
-rm -f "$COMPOSE.bak"
+# Filebrowser basic-auth hash substitution moved below — must run AFTER
+# the per-agent loop appends services that contain the placeholder.
 
 # Append one service block per agent. Protocol-specific env keys plus
 # (optional) AGENT_DESCRIPTION / AGENT_SKILLS sourced from persona metadata.
@@ -805,6 +800,15 @@ networks:
   fleet:
     driver: bridge
 YAML
+
+# Filebrowser basic-auth hash (apr1) — Traefik's basicauth middleware
+# expects htpasswd-style "user:hash" pairs. The hash contains literal
+# $-signs which compose interprets as variable refs unless we double
+# them; do that here, then sed-substitute into every per-agent label.
+# Must run AFTER the per-agent loop appends the placeholder.
+FB_HASH="$(openssl passwd -apr1 "$FB_PASSWORD" | sed 's/\$/$$/g')"
+sed -i.bak "s|FB_AUTH_HASH_PLACEHOLDER|$FB_HASH|g" "$COMPOSE"
+rm -f "$COMPOSE.bak"
 
 # validate
 ( cd "$FLEET_ROOT" && docker compose config >/dev/null )
