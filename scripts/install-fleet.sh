@@ -459,7 +459,7 @@ fi
 
 # --- 3. Make folders --------------------------------------------------------
 SUDO=""; [ -w "$(dirname "$FLEET_ROOT")" ] || SUDO="sudo"
-$SUDO mkdir -p "$FLEET_ROOT/workspaces" "$FLEET_ROOT/agents" "$FLEET_ROOT/letsencrypt"
+$SUDO mkdir -p "$FLEET_ROOT/workspaces" "$FLEET_ROOT/agents" "$FLEET_ROOT/agent-secrets" "$FLEET_ROOT/letsencrypt"
 $SUDO chown -R "$USER:$USER" "$FLEET_ROOT"
 touch "$FLEET_ROOT/letsencrypt/acme.json" && chmod 600 "$FLEET_ROOT/letsencrypt/acme.json"
 ok "install root: $FLEET_ROOT"
@@ -557,14 +557,25 @@ skills=$(printf '%q' "$skills")
 EOF
   fi
 
-  if [ ! -f "$AGENT_DIR/.env" ]; then
-    cat > "$AGENT_DIR/.env" <<EOF
+  # Provider keys live OUTSIDE the agent's HERMES_HOME mount so the
+  # agent container cannot read them — only the adapter can. The
+  # adapter's proxy at /proxy/<name>/<provider>/* injects these into
+  # the upstream Authorization header server-side. See
+  # hermes_adapter.proxy.secrets for the read path.
+  SECRETS_DIR="$FLEET_ROOT/agent-secrets/$name"
+  mkdir -p "$SECRETS_DIR"
+  if [ ! -f "$SECRETS_DIR/.env" ]; then
+    cat > "$SECRETS_DIR/.env" <<EOF
 # Provider key for agent "$name". Fill in via:
 #   ./fleet set $name --model <model> --key <key>
 # Common provider env-var names: OPENROUTER_API_KEY, ANTHROPIC_API_KEY,
 # OPENAI_API_KEY, TOGETHER_API_KEY, MINIMAX_API_KEY
+#
+# This file is read by the adapter ONLY (mounted at
+# /srv/hermes-fleet/agent-secrets/$name/.env). It is NOT mounted into
+# the agent container, so prompt injection cannot exfiltrate it.
 EOF
-    chmod 600 "$AGENT_DIR/.env"
+    chmod 600 "$SECRETS_DIR/.env"
   fi
   if [ ! -f "$AGENT_DIR/config.yaml" ]; then
     cat > "$AGENT_DIR/config.yaml" <<EOF
@@ -715,7 +726,11 @@ cat >> "$COMPOSE" <<YAML
     <<: *agent-common
     container_name: hermes-agent-$name
     command: ["gateway"]
-    env_file: ./agents/$name/.env
+    # Notably absent: env_file. Provider keys live in
+    # ./agent-secrets/$name/.env, mounted ONLY into the adapter so
+    # the LLM in this container cannot read them. See the
+    # MINIMAX_API_BASE override below for how outbound calls reach
+    # the real provider via the adapter's /proxy/* route.
     environment:
       # Unified gateway binds one port; A2A_* env vars are reused by
       # the gateway's Starlette app for both the A2A and OpenAI routes.
@@ -725,8 +740,18 @@ cat >> "$COMPOSE" <<YAML
       A2A_PUBLIC_URL: https://\${DOMAIN}/agent-$name
       # OpenAI-compat handler reads the same bearer.
       API_SERVER_KEY: \${BEARER_KEY}
+      # MiniMax outbound — agent has NO real key. The dummy MINIMAX_API_KEY
+      # satisfies hermes-agent's openai client (which would otherwise
+      # refuse to send a request without one); the adapter proxy ignores
+      # the inbound Authorization and substitutes the real key from
+      # /srv/hermes-fleet/agent-secrets/$name/.env. Add per-provider
+      # *_API_BASE pairs here for openai/anthropic/openrouter/etc when
+      # you wire those up.
+      MINIMAX_API_KEY: "proxy"
+      MINIMAX_API_BASE: "http://adapter:8766/proxy/$name/minimax/v1"
       # Override upstream's HERMES_HOME=/opt/data — point at the
-      # mounted agent dir so this agent's .env + config.yaml get loaded.
+      # mounted agent dir so this agent's config.yaml + persona.md get
+      # loaded. The mount no longer carries .env (see comment above).
       HERMES_HOME: /root/.hermes
       # The base image installs hermes-agent via ``pip install -e .``
       # from /opt/hermes; our adapter pip install on top can break the
@@ -880,21 +905,26 @@ cmd_set() {
     read -r -s -p "API key for $name (hidden): " key; echo
   fi
   local var; var="$(key_var_for_model "$model")"
-  cat > "agents/$name/.env" <<EOF
+  # Provider key goes to agent-secrets/ (NOT agents/) — adapter reads
+  # it via /proxy/, agent never sees it. See proxy/secrets.py.
+  mkdir -p "agent-secrets/$name"
+  cat > "agent-secrets/$name/.env" <<EOF
 $var=$key
 EOF
-  chmod 600 "agents/$name/.env"
+  chmod 600 "agent-secrets/$name/.env"
+  # Model name still lives in agents/<name>/config.yaml — that's a
+  # public choice, no secret here.
   cat > "agents/$name/config.yaml" <<EOF
 model:
   default: $model
 EOF
-  echo "✓ $name: model=$model, env-var=$var"
+  echo "✓ $name: model=$model, env-var=$var (key in agent-secrets/$name/.env)"
 }
 
 cmd_bootstrap() {
   for d in agents/*/; do
     local name; name="$(basename "$d")"
-    if grep -qE '^[A-Z_]+_API_KEY=.+' "$d/.env" 2>/dev/null; then
+    if grep -qE '^[A-Z_]+_API_KEY=.+' "agent-secrets/$name/.env" 2>/dev/null; then
       echo "↷ $name: already configured, skipping"
       continue
     fi
@@ -930,7 +960,7 @@ cmd_list() {
   for d in agents/*/; do
     local name; name="$(basename "$d")"
     local keyed="no"
-    grep -qE '^[A-Z_]+_API_KEY=.+' "$d/.env" 2>/dev/null && keyed="yes"
+    grep -qE '^[A-Z_]+_API_KEY=.+' "agent-secrets/$name/.env" 2>/dev/null && keyed="yes"
     local model; model="$(awk '/default:/ {print $2}' "$d/config.yaml" 2>/dev/null || echo "?")"
     printf "%-12s %-8s %s\n" "$name" "$keyed" "$model"
   done
