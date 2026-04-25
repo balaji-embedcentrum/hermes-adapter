@@ -48,7 +48,15 @@ COPY hermes_adapter ./hermes_adapter
 # match so the adapter lands in the same site-packages where ``run_agent``
 # already lives. Use ``python3 -m pip`` because the base image doesn't
 # expose a ``pip`` shim on PATH.
-RUN python3 -m pip install --break-system-packages '.[a2a]'
+#
+# Then re-run the upstream's editable install of hermes-agent. Pip's
+# resolver sometimes drops shared deps (openai, anthropic, …) when our
+# adapter's pyproject pins different versions, which leaves AIAgent
+# importable but its imports broken. Reinstalling restores any
+# casualties and re-anchors the .pth so HERMES_AGENT_ROOT is just a
+# safety net.
+RUN python3 -m pip install --break-system-packages '.[a2a]' \
+    && python3 -m pip install --break-system-packages -e /opt/hermes
 
 # Workspace API on :8766, unified gateway on :9001 (OpenAI + A2A + workspace
 # routes on one port — used by per-agent fleet containers).
