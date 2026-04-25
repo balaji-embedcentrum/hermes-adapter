@@ -740,15 +740,32 @@ cat >> "$COMPOSE" <<YAML
       A2A_PUBLIC_URL: https://\${DOMAIN}/agent-$name
       # OpenAI-compat handler reads the same bearer.
       API_SERVER_KEY: \${BEARER_KEY}
-      # MiniMax outbound — agent has NO real key. The dummy MINIMAX_API_KEY
-      # satisfies hermes-agent's openai client (which would otherwise
-      # refuse to send a request without one); the adapter proxy ignores
-      # the inbound Authorization and substitutes the real key from
-      # /srv/hermes-fleet/agent-secrets/$name/.env. Add per-provider
-      # *_API_BASE pairs here for openai/anthropic/openrouter/etc when
-      # you wire those up.
+      # All supported providers — outbound calls go through the adapter
+      # proxy, which substitutes the real key from
+      # /srv/hermes-fleet/agent-secrets/$name/.env. The dummy "*_API_KEY"
+      # satisfies hermes-agent's openai client (it refuses to send a
+      # request without ANY key) but is discarded by the proxy. Whichever
+      # model the operator picks via ``./fleet set --model <provider>/...``
+      # already has its env pair pre-wired here, so model switches don't
+      # need a compose regen.
+      #
+      # Source of truth for this list: hermes_adapter/proxy/providers.py.
+      # Adding a new provider = update both files.
       MINIMAX_API_KEY: "proxy"
       MINIMAX_API_BASE: "http://adapter:8766/proxy/$name/minimax/v1"
+      OPENAI_API_KEY: "proxy"
+      OPENAI_API_BASE: "http://adapter:8766/proxy/$name/openai/v1"
+      ANTHROPIC_API_KEY: "proxy"
+      ANTHROPIC_API_BASE: "http://adapter:8766/proxy/$name/anthropic/v1"
+      OPENROUTER_API_KEY: "proxy"
+      OPENROUTER_API_BASE: "http://adapter:8766/proxy/$name/openrouter/v1"
+      TOGETHER_API_KEY: "proxy"
+      TOGETHER_API_BASE: "http://adapter:8766/proxy/$name/together/v1"
+      GROQ_API_KEY: "proxy"
+      GROQ_API_BASE: "http://adapter:8766/proxy/$name/groq/v1"
+      # Google Gemini via its OpenAI-compat endpoint (Bearer auth).
+      GEMINI_API_KEY: "proxy"
+      GEMINI_API_BASE: "http://adapter:8766/proxy/$name/google/v1beta/openai"
       # Override upstream's HERMES_HOME=/opt/data — point at the
       # mounted agent dir so this agent's config.yaml + persona.md get
       # loaded. The mount no longer carries .env (see comment above).
@@ -876,16 +893,19 @@ Commands:
 EOF
 }
 
-# Map a model prefix to a provider env-var name
+# Map a model prefix to a provider env-var name. Must match the entries
+# in hermes_adapter/proxy/providers.py — the adapter looks up the key
+# under this exact name when proxying.
 key_var_for_model() {
   case "$1" in
-    openrouter/*)         echo "OPENROUTER_API_KEY" ;;
-    anthropic/*)          echo "ANTHROPIC_API_KEY" ;;
-    openai/*|gpt-*)       echo "OPENAI_API_KEY" ;;
-    google/*|gemini/*)    echo "GEMINI_API_KEY" ;;
-    together_ai/*)        echo "TOGETHER_API_KEY" ;;
-    minimax/*)            echo "MINIMAX_API_KEY" ;;
-    *)                    echo "PROVIDER_API_KEY" ;;
+    openrouter/*)              echo "OPENROUTER_API_KEY" ;;
+    anthropic/*)               echo "ANTHROPIC_API_KEY" ;;
+    openai/*|gpt-*)            echo "OPENAI_API_KEY" ;;
+    google/*|gemini/*)         echo "GEMINI_API_KEY" ;;
+    together/*|together_ai/*)  echo "TOGETHER_API_KEY" ;;
+    groq/*)                    echo "GROQ_API_KEY" ;;
+    minimax/*)                 echo "MINIMAX_API_KEY" ;;
+    *)                         echo "PROVIDER_API_KEY" ;;
   esac
 }
 
