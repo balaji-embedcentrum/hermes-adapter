@@ -310,14 +310,16 @@ async def _docker_inspect_health(container_name: str) -> tuple[bool, Optional[st
 
 
 async def _wait_healthy(agent: str, timeout: int = HEALTH_WAIT_TIMEOUT) -> None:
-    """Poll the agent's in-network OpenAI-compat `/v1/health` endpoint
-    until it returns 200 or timeout expires. Runs over the compose
-    network via the service DNS name — no Caddy involvement."""
-    # install-fleet.sh sets the OpenAI API port to 8642 inside the
-    # network. The service hostname is `hermes-agent-<agent>`.
+    """Poll the agent's in-network `/v1/health` endpoint until it returns
+    200 or timeout expires. Runs over the compose network via the service
+    DNS name — no Traefik involvement."""
+    # The unified gateway listens on port 9001 by default (see
+    # install-fleet.sh AGENT_PORT). Override with FLEET_AGENT_PORT if
+    # the install pinned a different port.
     import aiohttp  # local import — aiohttp is already in our deps
 
-    url = f"http://hermes-agent-{agent}:8642/v1/health"
+    port = os.environ.get("FLEET_AGENT_PORT", "9001")
+    url = f"http://hermes-agent-{agent}:{port}/v1/health"
     deadline = time.monotonic() + timeout
     last_err: Optional[str] = None
     async with aiohttp.ClientSession() as sess:
