@@ -41,5 +41,12 @@ PROVIDERS: dict[str, Provider] = {
         Provider("openrouter", "OPENROUTER_API_KEY", "OPENROUTER_API_BASE", "https://openrouter.ai/api/v1"),
         Provider("together", "TOGETHER_API_KEY", "TOGETHER_API_BASE", "https://api.together.xyz/v1"),
         Provider("groq", "GROQ_API_KEY", "GROQ_API_BASE", "https://api.groq.com/openai/v1"),
+        # Google Gemini exposes an OpenAI-compatible endpoint at
+        # ``/v1beta/openai`` that accepts ``Authorization: Bearer <key>``,
+        # so it slots into the same proxy pattern as the others. The
+        # native /v1/models?key=... API would need a different injection
+        # strategy and is intentionally not used here.
+        Provider("google", "GEMINI_API_KEY", "GEMINI_API_BASE",
+                 "https://generativelanguage.googleapis.com/v1beta/openai"),
     ]
 }

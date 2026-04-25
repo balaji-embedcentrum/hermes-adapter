@@ -30,7 +30,12 @@ def fleet_root() -> Path:
 
 
 def read_agent_env(agent: str) -> dict[str, str]:
-    """Parse ``agents/<agent>/.env`` into a dict.
+    """Parse ``agent-secrets/<agent>/.env`` into a dict.
+
+    The secret file lives under ``agent-secrets/`` (not ``agents/``) so
+    the agent's own HERMES_HOME mount can NOT see it — that's the
+    whole point of the proxy. The adapter sees both dirs because its
+    ``${FLEET_HOST_ROOT}:/srv/hermes-fleet`` bind covers the parent.
 
     Returns an empty dict if the agent has no .env yet (e.g. before
     the operator has run ``./fleet set``). The proxy treats missing
@@ -42,7 +47,7 @@ def read_agent_env(agent: str) -> dict[str, str]:
     """
     if not AGENT_NAME_RE.match(agent):
         raise ValueError(f"invalid agent name: {agent!r}")
-    env_path = fleet_root() / "agents" / agent / ".env"
+    env_path = fleet_root() / "agent-secrets" / agent / ".env"
     if not env_path.is_file():
         return {}
     out: dict[str, str] = {}
