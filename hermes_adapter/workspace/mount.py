@@ -18,6 +18,7 @@ import os
 from aiohttp import web
 
 from ..fleet import routes as fleet_routes
+from ..proxy import routes as proxy_routes
 from .routes import activate, file, git, init, listing, symbols, tree
 
 
@@ -62,3 +63,10 @@ def mount_routes(app: web.Application) -> None:
         r.add_post("/fleet/claim", fleet_routes.handle_claim)
         r.add_post("/fleet/unclaim", fleet_routes.handle_unclaim)
         r.add_get("/fleet/status", fleet_routes.handle_status)
+
+        # LLM provider proxy — keeps provider keys out of agent containers.
+        # Same fleet-mode gate: this only makes sense when the adapter has
+        # the on-host ``agents/<name>/.env`` files mounted. ``route("*")``
+        # covers POST (chat) + GET (models). The path tail is captured
+        # verbatim and appended to the provider's upstream base URL.
+        r.add_route("*", "/proxy/{agent}/{provider}/{path:.*}", proxy_routes.handle_proxy)
