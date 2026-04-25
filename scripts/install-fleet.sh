@@ -758,10 +758,12 @@ cat >> "$COMPOSE" <<YAML
       - traefik.http.middlewares.$name-strip.stripprefix.prefixes=/agent-$name
       - traefik.http.services.$name.loadbalancer.server.port=$AGENT_PORT
 
-  # Per-agent filebrowser sidecar — exposes the workspaces dir at
-  # https://$name-files.\${DOMAIN}. Filebrowser itself runs --noauth;
-  # Traefik adds basic auth in front (admin / \${FB_PASSWORD}). See
-  # /srv/hermes-fleet/.fb-password.
+  # Per-agent filebrowser sidecar — exposes ONLY this agent's Hermes
+  # home (sessions, memory, logs, persona.md, SOUL.md, config.yaml) at
+  # https://$name-files.\${DOMAIN}. Mount is scoped to ./agents/$name
+  # so this filebrowser cannot see sibling agents OR any user
+  # workspace. Filebrowser itself runs --noauth; Traefik adds basic
+  # auth in front (admin / \${FB_PASSWORD}). See /srv/hermes-fleet/.fb-password.
   hermes-fb-$name:
     image: filebrowser/filebrowser:latest
     container_name: hermes-fb-$name
@@ -773,9 +775,11 @@ cat >> "$COMPOSE" <<YAML
       - --address=0.0.0.0
       - --port=80
     volumes:
-      # All user workspaces. Filebrowser sees siblings — by design,
-      # this is an admin tool. Auth is enforced at the Traefik layer.
-      - ./workspaces:/srv
+      # ONLY this agent's home dir — sessions, memory, logs, persona.md,
+      # SOUL.md, config.yaml. NOT user workspaces, NOT sibling agents.
+      # Note: .env contains the provider API key in plaintext; treat the
+      # filebrowser admin password as a secret of equivalent sensitivity.
+      - ./agents/$name:/srv
     networks: [fleet]
     profiles: ["agents"]
     labels:
